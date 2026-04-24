@@ -16,6 +16,8 @@ class PlayerViewModel: ObservableObject {
     @Published var selectedMode: SubtitleMode? = nil
 
     @Published var useMPV = false
+    @Published var isPlaying = false
+    @Published var volume: Double = 100
     private(set) var mpvController: MPVController?
 
     private(set) var videoURL: URL?
@@ -67,6 +69,7 @@ class PlayerViewModel: ObservableObject {
         selectedMode = nil
         currentSubtitleIndex = -1
         videoError = nil
+        isPlaying = false
         isPreparing = false
         isLoadingSubtitles = true
         loadingStatus = "提取字幕中…"
@@ -100,6 +103,7 @@ class PlayerViewModel: ObservableObject {
         player.replaceCurrentItem(with: item)
         player.play()
         isVideoLoaded = true
+        isPlaying = true
     }
 
     private func switchToMPV(url: URL) {
@@ -114,6 +118,7 @@ class PlayerViewModel: ObservableObject {
         mpvController = ctrl
         useMPV = true
         isVideoLoaded = true
+        isPlaying = true
     }
 
     private func streamWithFragMP4(url: URL, ffmpegPath: String) {
@@ -130,6 +135,7 @@ class PlayerViewModel: ObservableObject {
                     let item = AVPlayerItem(url: output)
                     self.player.replaceCurrentItem(with: item)
                     self.player.play()
+                    self.isPlaying = true
                 } else {
                     self.videoError = "无法播放此视频格式"
                 }
@@ -186,7 +192,7 @@ class PlayerViewModel: ObservableObject {
 
         if needsLoad { await loadSubtitles(for: mode, url: url) }
 
-        Task { await preCacheOtherTracks(allTracks, url: url, skipMode: mode) }
+        Task { await preCacheOtherTracks(tracksSnapshot, url: url, skipMode: mode) }
     }
 
     private func preCacheOtherTracks(_ tracks: [SubtitleTrack], url: URL, skipMode: SubtitleMode) async {
@@ -317,6 +323,52 @@ class PlayerViewModel: ObservableObject {
             if let target = subtitles.firstIndex(where: { $0.startTime > now }) {
                 jumpToSubtitle(subtitles[target])
             }
+        }
+    }
+
+    // MARK: - Playback control
+
+    func togglePlayPause() {
+        if useMPV {
+            isPlaying.toggle()
+            mpvController?.setPlaying(isPlaying)
+        } else {
+            if player.timeControlStatus == .playing {
+                player.pause()
+                isPlaying = false
+            } else {
+                player.play()
+                isPlaying = true
+            }
+        }
+    }
+
+    func stopVideo() {
+        mpvController?.stop()
+        mpvController = nil
+        useMPV = false
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        fragStreamer?.cleanup()
+        fragStreamer = nil
+        cleanupTempFile()
+        isVideoLoaded = false
+        isPlaying = false
+        subtitles = []
+        availableTracks = []
+        selectedMode = nil
+        currentSubtitleIndex = -1
+        videoError = nil
+        subtitleCache = [:]
+        videoURL = nil
+    }
+
+    func setVolume(_ v: Double) {
+        volume = v
+        if useMPV {
+            mpvController?.setVolume(v)
+        } else {
+            player.volume = Float(v / 100.0)
         }
     }
 

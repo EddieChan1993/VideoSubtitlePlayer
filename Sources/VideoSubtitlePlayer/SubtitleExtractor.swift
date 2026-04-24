@@ -42,7 +42,7 @@ enum SubtitleExtractor {
             let errPipe = Pipe()
             proc.standardError = errPipe
 
-            var collected = Data()
+            let collected = DataBox()
             errPipe.fileHandleForReading.readabilityHandler = { h in
                 let chunk = h.availableData
                 if !chunk.isEmpty { collected.append(chunk) }
@@ -51,9 +51,8 @@ enum SubtitleExtractor {
             proc.terminationHandler = { _ in
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 // Drain anything left in the buffer
-                let tail = errPipe.fileHandleForReading.readDataToEndOfFile()
-                collected.append(tail)
-                let text = String(data: collected, encoding: .utf8) ?? ""
+                collected.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+                let text = String(data: collected.data, encoding: .utf8) ?? ""
                 continuation.resume(returning: parseFFmpegStreams(text))
             }
             do { try proc.run() } catch { continuation.resume(returning: []) }

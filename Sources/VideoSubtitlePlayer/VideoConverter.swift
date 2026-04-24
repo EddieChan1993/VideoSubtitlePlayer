@@ -81,7 +81,7 @@ enum VideoConverter {
             let errPipe = Pipe()
             proc.standardError = errPipe
 
-            var collected = Data()
+            let collected = DataBox()
             errPipe.fileHandleForReading.readabilityHandler = { h in
                 let chunk = h.availableData
                 if !chunk.isEmpty { collected.append(chunk) }
@@ -89,7 +89,7 @@ enum VideoConverter {
             proc.terminationHandler = { _ in
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 collected.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-                let text = String(data: collected, encoding: .utf8) ?? ""
+                let text = String(data: collected.data, encoding: .utf8) ?? ""
                 continuation.resume(returning: parseDuration(from: text))
             }
             do { try proc.run() } catch { continuation.resume(returning: 0) }

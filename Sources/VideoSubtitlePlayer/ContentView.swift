@@ -162,34 +162,75 @@ struct NavigationBarView: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 0) {
-                navButtons
-                    .padding(.leading, 10)
+                controlButtons
+                    .padding(.leading, 8)
 
                 Divider()
                     .frame(height: 18)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 8)
+
+                navButtons
+
+                Divider()
+                    .frame(height: 18)
+                    .padding(.horizontal, 8)
 
                 subtitleLabel
 
                 Spacer(minLength: 8)
+
+                volumeControl
+                    .padding(.trailing, 8)
 
                 positionLabel
                     .padding(.trailing, 12)
             }
             .frame(height: 44)
             .background(.background)
+            .overlay(keyboardShortcutButtons)
+        }
+    }
+
+    private var controlButtons: some View {
+        HStack(spacing: 2) {
+            NavButton(icon: "stop.fill", label: "停止播放", action: vm.stopVideo, enabled: true)
+            NavButton(icon: vm.isPlaying ? "pause.fill" : "play.fill",
+                      label: vm.isPlaying ? "暂停 (Space)" : "播放 (Space)",
+                      action: vm.togglePlayPause, enabled: true)
         }
     }
 
     private var navButtons: some View {
         HStack(spacing: 2) {
-            NavButton(icon: "backward.end.fill", label: "上一条字幕", action: vm.previousSubtitle,
+            NavButton(icon: "backward.end.fill", label: "上一条字幕 (A)", action: vm.previousSubtitle,
                       enabled: !vm.subtitles.isEmpty)
-            NavButton(icon: "arrow.counterclockwise", label: "回到当前字幕起点", action: vm.restartCurrentSubtitle,
+            NavButton(icon: "arrow.counterclockwise", label: "回到当前字幕起点 (S)", action: vm.restartCurrentSubtitle,
                       enabled: vm.currentSubtitleIndex >= 0)
-            NavButton(icon: "forward.end.fill", label: "下一条字幕", action: vm.nextSubtitle,
+            NavButton(icon: "forward.end.fill", label: "下一条字幕 (D)", action: vm.nextSubtitle,
                       enabled: vm.currentSubtitleIndex < vm.subtitles.count - 1 && !vm.subtitles.isEmpty)
         }
+    }
+
+    private var volumeControl: some View {
+        HStack(spacing: 4) {
+            Image(systemName: vm.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Slider(value: Binding(get: { vm.volume }, set: { vm.setVolume($0) }), in: 0...100)
+                .frame(width: 80)
+                .controlSize(.mini)
+        }
+    }
+
+    private var keyboardShortcutButtons: some View {
+        ZStack {
+            Button("") { vm.previousSubtitle() }.keyboardShortcut("a", modifiers: []).opacity(0)
+            Button("") { vm.restartCurrentSubtitle() }.keyboardShortcut("s", modifiers: []).opacity(0)
+            Button("") { vm.nextSubtitle() }.keyboardShortcut("d", modifiers: []).opacity(0)
+            Button("") { vm.togglePlayPause() }.keyboardShortcut(.space, modifiers: []).opacity(0)
+        }
+        .frame(width: 0, height: 0)
     }
 
     private var subtitleLabel: some View {

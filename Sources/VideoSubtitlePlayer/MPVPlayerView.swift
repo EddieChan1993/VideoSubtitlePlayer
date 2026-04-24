@@ -1,57 +1,29 @@
 import AppKit
 import SwiftUI
-import OpenGL.GL
-import CoreVideo
-
-// MARK: - CVDisplayLink 文件级回调（不捕获变量）
-
-private func mpvDisplayLinkOutput(
-    _ link: CVDisplayLink,
-    _ now: UnsafePointer<CVTimeStamp>,
-    _ out: UnsafePointer<CVTimeStamp>,
-    _ flagsIn: CVOptionFlags,
-    _ flagsOut: UnsafeMutablePointer<CVOptionFlags>,
-    _ ctx: UnsafeMutableRawPointer?) -> CVReturn {
-    guard let ctx else { return kCVReturnSuccess }
-    Unmanaged<MPVHostView>.fromOpaque(ctx).takeUnretainedValue().drawFrame()
-    return kCVReturnSuccess
-}
 
 // MARK: - 渲染 NSView
 
-/// 使用 NSOpenGLContext + CVDisplayLink 渲染 mpv 画面。
-/// 不依赖 CAOpenGLLayer（SwiftUI/Metal 层树中无法可靠驱动）。
+/// 渲染驱动方式：mpv 的 onNeedsDisplay 回调触发（有新帧时才渲染）
+/// 渲染在专用后台队列执行，主线程只负责更新 CALayer.contents
+/// 彻底避免 CVDisplayLink 方案中因并发调用 mpv_render_context_render 导致的死锁/黑屏
 final class MPVHostView: NSView {
 
     weak var mpvController: MPVController?
 
-    private var glCtx: NSOpenGLContext?
-    private var displayLink: CVDisplayLink?
-    private var renderContextReady = false
+    private let renderQueue = DispatchQueue(label: "mpv.render", qos: .userInteractive)
+    private var contextReady  = false
+    private var pendingRender = false   // 主线程访问，防止 render 任务堆积
 
-    // 在主线程写、display link 线程读，Int32 原子读写已足够
+    // 主线程写、renderQueue 读；Int32 原子读写足够
     private var renderW = Int32(0)
     private var renderH = Int32(0)
 
     init(controller: MPVController) {
         self.mpvController = controller
         super.init(frame: .zero)
-
-        // 创建双缓冲 OpenGL 上下文
-        let attrs: [NSOpenGLPixelFormatAttribute] = [
-            UInt32(NSOpenGLPFADoubleBuffer),
-            UInt32(NSOpenGLPFAAllowOfflineRenderers),
-            UInt32(NSOpenGLPFABackingStore),
-            0
-        ]
-        if let pf = NSOpenGLPixelFormat(attributes: attrs),
-           let ctx = NSOpenGLContext(format: pf, share: nil) {
-            glCtx = ctx
-        }
-
-        // layer-backed：让 NSOpenGLContext 渲染到 Core Animation 表面
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
+        layer?.contentsGravity  = .resize
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -61,80 +33,64 @@ final class MPVHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard let window else {
-            stopDisplayLink()
-            return
+        guard let window else { return }
+
+        layer?.contentsScale = window.backingScaleFactor
+
+        if !contextReady {
+            contextReady = true
+            // render context 已在 prepare() 中建立；此处只需连接回调并立即渲染当前帧
+            mpvController?.onNeedsDisplay = { [weak self] in self?.scheduleRender() }
         }
+        // 立即尝试渲染——即使 onNeedsDisplay 之前已触发过但因 view 未就绪而错过
+        scheduleRender()
+    }
 
-        // 把 GL 上下文绑定到这个 layer-backed view
-        glCtx?.view = self
+    // SwiftUI 通过 setFrameSize 设置尺寸，不触发 layout()
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0
+        layer?.contentsScale = scale
+        let newW = Int32((newSize.width  * scale).rounded())
+        let newH = Int32((newSize.height * scale).rounded())
+        let firstValidSize = (renderW == 0 || renderH == 0) && newW > 0 && newH > 0
+        renderW = newW
+        renderH = newH
+        // 首次获得有效尺寸时，主动渲染一帧（避免等待下一次 onNeedsDisplay）
+        if firstValidSize { scheduleRender() }
+    }
 
-        if !renderContextReady {
-            renderContextReady = true
-            glCtx?.makeCurrentContext()
-            print("[MPV] viewDidMoveToWindow → setupRenderContext")
-            mpvController?.setupRenderContext()
-            print("[MPV] renderCtx = \(String(describing: mpvController?.renderCtx))")
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if let scale = window?.backingScaleFactor {
+            layer?.contentsScale = scale
+            renderW = Int32((bounds.width  * scale).rounded())
+            renderH = Int32((bounds.height * scale).rounded())
         }
-
-        updateRenderSize(scaleFactor: window.backingScaleFactor)
-        startDisplayLink()
     }
 
-    override func layout() {
-        super.layout()
-        glCtx?.update()   // 通知 GL 上下文尺寸已变
-        if let s = window?.backingScaleFactor { updateRenderSize(scaleFactor: s) }
-    }
+    // MARK: - 渲染调度（主线程）
 
-    private func updateRenderSize(scaleFactor: CGFloat) {
-        renderW = Int32((bounds.width  * scaleFactor).rounded())
-        renderH = Int32((bounds.height * scaleFactor).rounded())
-    }
+    private func scheduleRender() {
+        // pendingRender 防止 renderQueue 任务堆积
+        guard !pendingRender else { return }
+        let w = renderW, h = renderH
+        guard w > 0, h > 0 else { return }
 
-    // MARK: - 渲染（由 CVDisplayLink 在后台线程调用）
-
-    func drawFrame() {
-        guard let glCtx,
-              let cglCtx = glCtx.cglContextObj,
-              renderW > 0, renderH > 0 else { return }
-
-        CGLLockContext(cglCtx)
-        glCtx.makeCurrentContext()
-
-        if let ctrl = mpvController, ctrl.renderCtx != nil {
-            ctrl.renderFrame(width: renderW, height: renderH)
-        } else {
-            // 还未就绪：填黑
-            glClearColor(0, 0, 0, 1)
-            glClear(GLbitfield(GL_COLOR_BUFFER_BIT))
+        pendingRender = true
+        renderQueue.async { [weak self] in
+            guard let self else { return }
+            let img = self.mpvController?.renderFrameAsCGImage(width: w, height: h)
+            DispatchQueue.main.async { [weak self] in
+                self?.pendingRender = false
+                guard let img else { return }
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self?.layer?.contents = img
+                CATransaction.commit()
+            }
         }
-
-        CGLFlushDrawable(cglCtx)    // 交换双缓冲
-        CGLUnlockContext(cglCtx)
     }
-
-    // MARK: - Display Link
-
-    private func startDisplayLink() {
-        guard displayLink == nil else { return }
-        var dl: CVDisplayLink?
-        CVDisplayLinkCreateWithActiveCGDisplays(&dl)
-        guard let dl else { return }
-        CVDisplayLinkSetOutputCallback(dl, mpvDisplayLinkOutput,
-                                       Unmanaged.passUnretained(self).toOpaque())
-        CVDisplayLinkStart(dl)
-        displayLink = dl
-        print("[MPV] CVDisplayLink started")
-    }
-
-    private func stopDisplayLink() {
-        guard let dl = displayLink else { return }
-        CVDisplayLinkStop(dl)
-        displayLink = nil
-    }
-
-    deinit { stopDisplayLink() }
 }
 
 // MARK: - SwiftUI 包装

@@ -23,3 +23,10 @@ struct Subtitle: Identifiable, Equatable {
         return String(format: "%d:%02d", m, s)
     }
 }
+
+/// Reference-type wrapper around Data so it can be safely shared across
+/// readabilityHandler / terminationHandler closures without Swift concurrency errors.
+final class DataBox: @unchecked Sendable {
+    private(set) var data = Data()
+    func append(_ d: Data) { data.append(d) }
+}

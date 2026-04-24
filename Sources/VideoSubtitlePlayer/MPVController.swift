@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CoreGraphics
 
 // MARK: - libmpv 核心 ABI
 
@@ -23,32 +24,19 @@ private struct MPVEventProperty {
 
 // MARK: - Render API 常量
 
-private let MPV_RENDER_PARAM_API_TYPE: Int32 = 1
-private let MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: Int32 = 2
-private let MPV_RENDER_PARAM_OPENGL_FBO: Int32 = 3
-private let MPV_RENDER_PARAM_FLIP_Y: Int32 = 4
+private let MPV_RENDER_PARAM_API_TYPE: Int32           = 1
+private let MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: Int32 = 12
+private let MPV_RENDER_PARAM_SW_SIZE: Int32            = 17
+private let MPV_RENDER_PARAM_SW_FORMAT: Int32          = 18
+private let MPV_RENDER_PARAM_SW_STRIDE: Int32          = 19
+private let MPV_RENDER_PARAM_SW_POINTER: Int32         = 20
 
-// 对应 C 结构体 mpv_render_param { enum(4B) + pad(4B) + void*(8B) }
+// C 结构体 mpv_render_param { enum(4B) + pad(4B) + void*(8B) }
 private struct MPVRenderParam {
     var type: Int32
     var _pad: Int32
     var data: UnsafeMutableRawPointer?
     init(_ t: Int32, _ d: UnsafeMutableRawPointer?) { type = t; _pad = 0; data = d }
-}
-
-// mpv_opengl_init_params
-private struct MPVOpenGLInitParams {
-    var get_proc_address: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?)?
-    var get_proc_address_ctx: UnsafeMutableRawPointer?
-    var extra_exts: UnsafePointer<CChar>?
-}
-
-// mpv_opengl_fbo
-private struct MPVOpenGLFBO {
-    var fbo: Int32
-    var w: Int32
-    var h: Int32
-    var internal_format: Int32
 }
 
 // MARK: - 函数指针（核心）
@@ -62,12 +50,9 @@ private typealias mpv_observe_fn    = @convention(c) (OpaquePointer, UInt64, Uns
 private typealias mpv_wait_event_fn = @convention(c) (OpaquePointer, Double) -> UnsafeRawPointer?
 
 // MARK: - 函数指针（Render API）
-// 参数用 UnsafeMutableRawPointer 回避 @convention(c) 对泛型指针的限制
 
 private typealias mpv_render_context_create_fn = @convention(c) (
-    UnsafeMutableRawPointer,   // mpv_render_context **res
-    OpaquePointer,             // mpv_handle *mpv
-    UnsafeMutableRawPointer    // mpv_render_param *params
+    UnsafeMutableRawPointer, OpaquePointer, UnsafeMutableRawPointer
 ) -> Int32
 
 private typealias mpv_render_context_set_update_callback_fn = @convention(c) (
@@ -77,24 +62,12 @@ private typealias mpv_render_context_set_update_callback_fn = @convention(c) (
 ) -> Void
 
 private typealias mpv_render_context_render_fn = @convention(c) (
-    OpaquePointer,
-    UnsafeMutableRawPointer   // mpv_render_param *params
+    OpaquePointer, UnsafeMutableRawPointer
 ) -> Int32
 
 private typealias mpv_render_context_free_fn = @convention(c) (OpaquePointer) -> Void
 
-// MARK: - OpenGL 符号查找（文件级函数，无捕获）
-
-private let openGLHandle: UnsafeMutableRawPointer? =
-    dlopen("/System/Library/Frameworks/OpenGL.framework/OpenGL", RTLD_LAZY | RTLD_LOCAL)
-
-private func mpvGLGetProcAddress(
-    _ ctx: UnsafeMutableRawPointer?,
-    _ name: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? {
-    dlsym(openGLHandle, name)
-}
-
-// mpv 有新帧时的回调（不能捕获变量，通过 ctx 传递 MPVController 指针）
+// mpv 有新帧时的回调（文件级函数，不能从回调内部再调用任何 mpv API）
 private func mpvRenderUpdateCallback(_ ctx: UnsafeMutableRawPointer?) {
     guard let ctx else { return }
     let ctrl = Unmanaged<MPVController>.fromOpaque(ctx).takeUnretainedValue()
@@ -103,8 +76,8 @@ private func mpvRenderUpdateCallback(_ ctx: UnsafeMutableRawPointer?) {
 
 // MARK: - MPVController
 
-/// 通过 dlopen 加载 libmpv.dylib，使用 Render API 将视频渲染到调用方提供的 GL FBO。
-/// 不创建任何原生窗口。
+/// 通过 dlopen 加载 libmpv，使用 SW Render API 将视频帧输出为 CGImage。
+/// 不创建原生窗口，不依赖 OpenGL/Metal。
 final class MPVController {
 
     static let libraryPath: String? = [
@@ -122,9 +95,9 @@ final class MPVController {
     private var stopping = false
 
     var onTimeUpdate:   ((TimeInterval) -> Void)?
-    var onNeedsDisplay: (() -> Void)?          // GL 层设置，新帧时触发 setNeedsDisplay
+    /// 主线程调用；有新帧时触发，调用方负责调用 renderFrameAsCGImage 并更新显示
+    var onNeedsDisplay: (() -> Void)?
 
-    // 核心
     private var fn_create:    mpv_create_fn?
     private var fn_init:      mpv_initialize_fn?
     private var fn_terminate: mpv_terminate_fn?
@@ -133,7 +106,6 @@ final class MPVController {
     private var fn_observe:   mpv_observe_fn?
     private var fn_wait:      mpv_wait_event_fn?
 
-    // Render API
     private var fn_renderCreate:      mpv_render_context_create_fn?
     private var fn_renderSetCallback: mpv_render_context_set_update_callback_fn?
     private var fn_renderRender:      mpv_render_context_render_fn?
@@ -146,7 +118,6 @@ final class MPVController {
 
     // MARK: - 公开 API
 
-    /// 第一步：加载 libmpv、初始化、开始解码（可在 GL 层就绪前调用）
     @discardableResult
     func prepare(url: URL) -> Bool {
         guard let path = Self.libraryPath,
@@ -173,9 +144,12 @@ final class MPVController {
         opt("no",     "input-default-bindings")
         opt("yes",    "keep-open")
         opt("quiet",  "msg-level")
-        opt("libmpv", "vo")     // 使用 Render API，不创建原生窗口
+        opt("libmpv", "vo")
 
         guard fn_init?(mpvCtx) == 0 else { return false }
+
+        // render context 必须在 loadfile 之前建立，否则 mpv 找不到 VO 直接跳过视频
+        setupRenderContext()
 
         _ = fn_observe?(mpvCtx, 1, "time-pos", MPV_FORMAT_DOUBLE)
         cmd(["loadfile", url.path])
@@ -184,80 +158,103 @@ final class MPVController {
         return true
     }
 
-    /// 第二步：GL 上下文已 current 时调用，建立 mpv Render Context
     func setupRenderContext() {
         guard let mpvCtx = ctx, renderCtx == nil,
-              let fn_renderCreate, let fn_renderSetCallback else {
-            print("[MPV] setupRenderContext guard failed: ctx=\(ctx != nil) renderCtx=\(renderCtx != nil)")
-            return
-        }
-        print("[MPV] setupRenderContext: creating render context...")
-
-        var initParams = MPVOpenGLInitParams(
-            get_proc_address: mpvGLGetProcAddress,
-            get_proc_address_ctx: nil,
-            extra_exts: nil
-        )
+              let fn_renderCreate, let fn_renderSetCallback else { return }
 
         var renderOut: OpaquePointer? = nil
+        "sw".withCString { apiType in
+            withUnsafeMutablePointer(to: &renderOut) { outPtr in
+                var params: [MPVRenderParam] = [
+                    MPVRenderParam(MPV_RENDER_PARAM_API_TYPE,
+                                   UnsafeMutableRawPointer(mutating: apiType)),
+                    MPVRenderParam(0, nil),
+                ]
+                params.withUnsafeMutableBytes { buf in
+                    let err = fn_renderCreate(
+                        UnsafeMutableRawPointer(outPtr), mpvCtx, buf.baseAddress!)
+                    print("[MPV] render_context_create(sw) → \(err)")
+                }
+            }
+        }
 
-        // 用 withCString 保证 "opengl" 字符串在 C 调用期间指针有效
-        "opengl".withCString { apiType in
-            withUnsafeMutablePointer(to: &initParams) { initPtr in
-                withUnsafeMutablePointer(to: &renderOut) { outPtr in
-                    var params: [MPVRenderParam] = [
-                        MPVRenderParam(MPV_RENDER_PARAM_API_TYPE,
-                                       UnsafeMutableRawPointer(mutating: apiType)),
-                        MPVRenderParam(MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
-                                       UnsafeMutableRawPointer(initPtr)),
-                        MPVRenderParam(0, nil),
-                    ]
-                    params.withUnsafeMutableBytes { buf in
-                        let err = fn_renderCreate(
-                            UnsafeMutableRawPointer(outPtr),
-                            mpvCtx,
-                            buf.baseAddress!
-                        )
-                        print("[MPV] mpv_render_context_create returned: \(err)")
+        guard let rc = renderOut else { print("[MPV] renderOut nil"); return }
+        renderCtx = rc
+        // 注册新帧回调；注册后会立即触发一次回调
+        fn_renderSetCallback(rc, mpvRenderUpdateCallback,
+                             Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    /// 将当前帧渲染为 CGImage（在专用后台线程调用，非主线程）
+    func renderFrameAsCGImage(width: Int32, height: Int32) -> CGImage? {
+        guard let rc = renderCtx,
+              let fn_renderRender,
+              width > 0, height > 0 else { return nil }
+
+        let w = Int(width), h = Int(height)
+        // 64 字节对齐的 stride，满足 mpv SW 渲染的 SIMD 要求
+        let pixelBytes = 4
+        let strideRaw  = w * pixelBytes
+        let alignment  = 64
+        let stride     = ((strideRaw + alignment - 1) / alignment) * alignment
+        let byteCount  = stride * h
+
+        // 分配 64 字节对齐的像素缓冲区，由 CGDataProvider 释放
+        let ptr = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: alignment)
+
+        var sz: [Int32]  = [width, height]
+        var strideVal: Int = stride
+        // BLOCK_FOR_TARGET_TIME=0：禁止阻塞等待帧时间，避免并发调用 render 时死锁/黑屏
+        var noBlock: Int32 = 0
+
+        let err: Int32 = sz.withUnsafeMutableBytes { szBuf in
+            "rgb0".withCString { fmt in
+                withUnsafeMutableBytes(of: &strideVal) { strideBuf in
+                    withUnsafeMutableBytes(of: &noBlock) { noBlockBuf in
+                        var params: [MPVRenderParam] = [
+                            MPVRenderParam(MPV_RENDER_PARAM_SW_SIZE,
+                                           szBuf.baseAddress!),
+                            MPVRenderParam(MPV_RENDER_PARAM_SW_FORMAT,
+                                           UnsafeMutableRawPointer(mutating: fmt)),
+                            MPVRenderParam(MPV_RENDER_PARAM_SW_STRIDE,
+                                           strideBuf.baseAddress!),
+                            MPVRenderParam(MPV_RENDER_PARAM_SW_POINTER,
+                                           ptr),
+                            MPVRenderParam(MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                                           noBlockBuf.baseAddress!),
+                            MPVRenderParam(0, nil),
+                        ]
+                        return params.withUnsafeMutableBytes { buf in
+                            fn_renderRender(rc, buf.baseAddress!)
+                        }
                     }
                 }
             }
         }
 
-        guard let rc = renderOut else {
-            print("[MPV] renderOut is nil after create!")
-            return
+        guard err == 0 else { ptr.deallocate(); return nil }
+
+        // CGDataProvider 拥有 ptr 的所有权，释放时调用 deallocate
+        let releasePtr: CGDataProviderReleaseDataCallback = { info, _, _ in
+            info?.deallocate()
         }
-        print("[MPV] Render context created: \(rc)")
-        renderCtx = rc
+        guard let provider = CGDataProvider(
+            dataInfo: ptr, data: ptr, size: byteCount, releaseData: releasePtr)
+        else { ptr.deallocate(); return nil }
 
-        fn_renderSetCallback(rc, mpvRenderUpdateCallback,
-                             Unmanaged.passUnretained(self).toOpaque())
-    }
-
-    /// 第三步：每帧在 draw(inCGLContext:) 中调用
-    func renderFrame(width: Int32, height: Int32) {
-        guard let rc = renderCtx, width > 0, height > 0 else { return }
-
-        var fbo   = MPVOpenGLFBO(fbo: 0, w: width, h: height, internal_format: 0)
-        var flipY: Int32 = 1
-
-        withUnsafeMutablePointer(to: &fbo) { fboPtr in
-            withUnsafeMutablePointer(to: &flipY) { flipPtr in
-                var params: [MPVRenderParam] = [
-                    MPVRenderParam(MPV_RENDER_PARAM_OPENGL_FBO,  UnsafeMutableRawPointer(fboPtr)),
-                    MPVRenderParam(MPV_RENDER_PARAM_FLIP_Y,      UnsafeMutableRawPointer(flipPtr)),
-                    MPVRenderParam(0, nil),
-                ]
-                params.withUnsafeMutableBytes { buf in
-                    _ = fn_renderRender?(rc, buf.baseAddress!)
-                }
-            }
-        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
+        return CGImage(width: w, height: h,
+                       bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: stride, space: colorSpace,
+                       bitmapInfo: bitmapInfo, provider: provider,
+                       decode: nil, shouldInterpolate: false,
+                       intent: .defaultIntent)
     }
 
     func seek(to time: TimeInterval) { cmd(["seek", String(time), "absolute"]) }
     func setPlaying(_ playing: Bool) { cmd(["set_property", "pause", playing ? "no" : "yes"]) }
+    func setVolume(_ volume: Double) { cmd(["set_property", "volume", String(volume)]) }
 
     func stop() {
         stopping = true
@@ -265,8 +262,6 @@ final class MPVController {
         if let c  = ctx       { fn_terminate?(c);   ctx = nil }
         if lib != nil         { dlclose(lib);        lib = nil }
     }
-
-    // MARK: - 内部工具
 
     private func opt(_ value: String, _ key: String) {
         guard let c = ctx else { return }
