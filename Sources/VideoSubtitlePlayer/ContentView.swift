@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var vm = PlayerViewModel()
     @State private var dropTargeted = false
+    @State private var keyMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +52,21 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             NavigationBarView(vm: vm)
+        }
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "a": vm.previousSubtitle(); return nil
+                case "s": vm.restartCurrentSubtitle(); return nil
+                case "d": vm.nextSubtitle(); return nil
+                case " ": vm.togglePlayPause(); return nil
+                default: return event
+                }
+            }
+        }
+        .onDisappear {
+            if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         }
     }
 
@@ -187,13 +203,12 @@ struct NavigationBarView: View {
             }
             .frame(height: 44)
             .background(.background)
-            .overlay(keyboardShortcutButtons)
         }
     }
 
     private var controlButtons: some View {
         HStack(spacing: 2) {
-            NavButton(icon: "stop.fill", label: "停止播放", action: vm.stopVideo, enabled: true)
+            NavButton(icon: "stop.fill", label: "回到片头", action: vm.stopPlayback, enabled: true)
             NavButton(icon: vm.isPlaying ? "pause.fill" : "play.fill",
                       label: vm.isPlaying ? "暂停 (Space)" : "播放 (Space)",
                       action: vm.togglePlayPause, enabled: true)
@@ -217,20 +232,10 @@ struct NavigationBarView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
-            Slider(value: Binding(get: { vm.volume }, set: { vm.setVolume($0) }), in: 0...100)
+            Slider(value: $vm.volume, in: 0...100)
                 .frame(width: 80)
                 .controlSize(.mini)
         }
-    }
-
-    private var keyboardShortcutButtons: some View {
-        ZStack {
-            Button("") { vm.previousSubtitle() }.keyboardShortcut("a", modifiers: []).opacity(0)
-            Button("") { vm.restartCurrentSubtitle() }.keyboardShortcut("s", modifiers: []).opacity(0)
-            Button("") { vm.nextSubtitle() }.keyboardShortcut("d", modifiers: []).opacity(0)
-            Button("") { vm.togglePlayPause() }.keyboardShortcut(.space, modifiers: []).opacity(0)
-        }
-        .frame(width: 0, height: 0)
     }
 
     private var subtitleLabel: some View {

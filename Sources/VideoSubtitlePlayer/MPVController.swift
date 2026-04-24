@@ -253,8 +253,8 @@ final class MPVController {
     }
 
     func seek(to time: TimeInterval) { cmd(["seek", String(time), "absolute"]) }
-    func setPlaying(_ playing: Bool) { cmd(["set_property", "pause", playing ? "no" : "yes"]) }
-    func setVolume(_ volume: Double) { cmd(["set_property", "volume", String(volume)]) }
+    func setPlaying(_ playing: Bool) { cmd(["set", "pause", playing ? "no" : "yes"]) }
+    func setVolume(_ volume: Double) { cmd(["set", "volume", String(volume)]) }
 
     func stop() {
         stopping = true

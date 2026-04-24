@@ -17,7 +17,12 @@ class PlayerViewModel: ObservableObject {
 
     @Published var useMPV = false
     @Published var isPlaying = false
-    @Published var volume: Double = 100
+    @Published var volume: Double = 100 {
+        didSet {
+            if useMPV { mpvController?.setVolume(volume) }
+            else { player.volume = Float(volume / 100.0) }
+        }
+    }
     private(set) var mpvController: MPVController?
 
     private(set) var videoURL: URL?
@@ -343,33 +348,15 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    func stopVideo() {
-        mpvController?.stop()
-        mpvController = nil
-        useMPV = false
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        fragStreamer?.cleanup()
-        fragStreamer = nil
-        cleanupTempFile()
-        isVideoLoaded = false
-        isPlaying = false
-        subtitles = []
-        availableTracks = []
-        selectedMode = nil
-        currentSubtitleIndex = -1
-        videoError = nil
-        subtitleCache = [:]
-        videoURL = nil
-    }
-
-    func setVolume(_ v: Double) {
-        volume = v
+    func stopPlayback() {
         if useMPV {
-            mpvController?.setVolume(v)
+            mpvController?.seek(to: 0)
+            mpvController?.setPlaying(false)
         } else {
-            player.volume = Float(v / 100.0)
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.pause()
         }
+        isPlaying = false
     }
 
     // MARK: - Cleanup
