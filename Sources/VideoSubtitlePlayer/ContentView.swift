@@ -24,25 +24,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openVideoFile)) { _ in
             vm.openFile()
         }
-        .onReceive(vm.$videoTitle) { title in
-            guard !title.isEmpty else { return }
-            NSApp.keyWindow?.title = title
-        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button(action: vm.openFile) {
                     Label("打开视频", systemImage: "folder")
                 }
                 .help("打开视频文件 (⌘O)")
-            }
-            ToolbarItem(placement: .principal) {
-                if vm.isVideoLoaded, !vm.videoTitle.isEmpty {
-                    Text(vm.videoTitle)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 260)
-                }
             }
             ToolbarItem(placement: .primaryAction) {
                 if vm.isVideoLoaded {
