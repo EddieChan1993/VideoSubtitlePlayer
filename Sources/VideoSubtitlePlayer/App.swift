@@ -2,6 +2,11 @@ import SwiftUI
 
 @main
 struct VideoSubtitleApp: App {
+
+    init() {
+        LicenseCheck.validateOrQuit()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

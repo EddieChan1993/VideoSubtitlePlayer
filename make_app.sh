@@ -7,6 +7,7 @@
 #   ./make_app.sh
 #
 # Requirements: Xcode Command Line Tools (xcode-select --install)
+#               brew install mpv ffmpeg
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -15,6 +16,34 @@ VERSION="1.1.0"
 BUNDLE_ID="com.videosubtitleplayer.app"
 MIN_OS="14.0"
 
+# ── 1. Detect Apple ID ───────────────────────────────────────────────────────
+echo "▶  Detecting Apple ID…"
+APPLE_ID=""
+MOBILEME_PLIST="$HOME/Library/Preferences/MobileMeAccounts.plist"
+
+if [ -f "$MOBILEME_PLIST" ]; then
+    APPLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Accounts:0:AccountID" \
+                   "$MOBILEME_PLIST" 2>/dev/null || true)
+fi
+
+if [ -z "$APPLE_ID" ]; then
+    echo "⚠️   No Apple ID found — app will run on any machine (dev mode)."
+else
+    echo "   Binding to Apple ID: $APPLE_ID"
+fi
+
+# ── 2. Generate app icon ─────────────────────────────────────────────────────
+echo "▶  Generating app icon…"
+if swift make_icon.swift; then
+    if [ -d "AppIcon.iconset" ]; then
+        iconutil -c icns AppIcon.iconset -o AppIcon.icns
+        echo "   ✓  AppIcon.icns created"
+    fi
+else
+    echo "⚠️   Icon generation failed — continuing without custom icon"
+fi
+
+# ── 3. Build release binary ──────────────────────────────────────────────────
 echo "▶  Building release binary…"
 swift build -c release
 
@@ -23,6 +52,7 @@ if [ ! -f "$BIN" ]; then
   echo "Error: binary not found at $BIN"; exit 1
 fi
 
+# ── 4. Assemble .app bundle ──────────────────────────────────────────────────
 APPDIR="${APP}.app"
 CONTENTS="${APPDIR}/Contents"
 MACOS="${CONTENTS}/MacOS"
@@ -33,6 +63,21 @@ rm -rf "$APPDIR"
 mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$BIN" "$MACOS/$APP"
+
+# Copy icon if it was generated
+if [ -f "AppIcon.icns" ]; then
+    cp AppIcon.icns "$RESOURCES/AppIcon.icns"
+    ICON_KEY='  <key>CFBundleIconFile</key>        <string>AppIcon</string>'
+else
+    ICON_KEY=""
+fi
+
+# ── 5. Write Info.plist (with optional BoundAppleID) ─────────────────────────
+if [ -n "$APPLE_ID" ]; then
+    APPLE_ID_KEY="  <key>BoundAppleID</key>             <string>${APPLE_ID}</string>"
+else
+    APPLE_ID_KEY=""
+fi
 
 cat > "${CONTENTS}/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -53,6 +98,8 @@ cat > "${CONTENTS}/Info.plist" << PLIST
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
+${ICON_KEY}
+${APPLE_ID_KEY}
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -70,11 +117,15 @@ cat > "${CONTENTS}/Info.plist" << PLIST
 </plist>
 PLIST
 
+# ── 6. Ad-hoc codesign ───────────────────────────────────────────────────────
 echo "▶  Signing (ad-hoc)…"
 codesign --force --deep --sign - "$APPDIR"
 
 echo ""
 echo "✅  ${APPDIR} is ready."
+if [ -n "$APPLE_ID" ]; then
+    echo "   🔒  Bound to Apple ID: ${APPLE_ID}"
+fi
 echo ""
 echo "   Open now:          open '${APPDIR}'"
 echo "   Move to /Applications:"
