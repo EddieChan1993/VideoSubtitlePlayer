@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var dropTargeted = false
     @State private var keyMonitor: Any?
     @State private var showSidebar = true
+    @State private var isSeeking = false
+    @State private var seekValue: Double = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,10 +61,8 @@ struct ContentView: View {
                     } else if let err = vm.videoError {
                         videoErrorOverlay(err)
                     }
-                    // ── Subtitle overlay ─────────────────────────
-                    // Driven by vm.subtitles / currentSubtitleIndex / showSubtitles,
-                    // so it automatically reflects track switches and the eye-toggle.
-                    videoSubtitleOverlay
+                    // seekBarOverlay 内部已包含字幕浮层，无需单独渲染 videoSubtitleOverlay
+                    seekBarOverlay
                 }
                 .frame(minWidth: 420, minHeight: 280)
 
@@ -75,6 +75,59 @@ struct ContentView: View {
 
             NavigationBarView(vm: vm, showSidebar: $showSidebar)
         }
+    }
+
+    private var seekBarOverlay: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            // 字幕浮层先占位，进度条跟在下方，两者不重叠
+            videoSubtitleOverlay
+                .allowsHitTesting(false)
+            HStack(spacing: 8) {
+                Text(formatTime(isSeeking ? seekValue : vm.currentTime))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .fixedSize()
+
+                Slider(
+                    value: Binding(
+                        get: { isSeeking ? seekValue : vm.currentTime },
+                        set: { v in isSeeking = true; seekValue = v }
+                    ),
+                    in: 0...max(vm.videoDuration, 1)
+                ) { editing in
+                    if !editing {
+                        vm.seek(to: seekValue)
+                        isSeeking = false
+                    }
+                }
+                .controlSize(.small)
+
+                Text(formatTime(vm.videoDuration))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .fixedSize()
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+            .background(
+                LinearGradient(
+                    colors: [.black.opacity(0), .black.opacity(0.6)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func formatTime(_ t: Double) -> String {
+        guard t.isFinite, t >= 0 else { return "0:00" }
+        let total = Int(t)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     @ViewBuilder

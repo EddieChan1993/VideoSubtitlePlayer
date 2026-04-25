@@ -100,6 +100,7 @@ final class MPVController {
     private var pixelBufSize = 0
 
     var onTimeUpdate:   ((TimeInterval) -> Void)?
+    var onDuration:     ((TimeInterval) -> Void)?
     /// 主线程调用；有新帧时触发，调用方负责调用 renderFrameAsCGImage 并更新显示
     var onNeedsDisplay: (() -> Void)?
 
@@ -161,6 +162,7 @@ final class MPVController {
         setupRenderContext()
 
         _ = fn_observe?(mpvCtx, 1, "time-pos", MPV_FORMAT_DOUBLE)
+        _ = fn_observe?(mpvCtx, 2, "duration", MPV_FORMAT_DOUBLE)
         cmd(["loadfile", url.path])
 
         Thread.detachNewThread { [weak self] in self?.eventLoop() }
@@ -263,7 +265,8 @@ final class MPVController {
                        intent: .defaultIntent)
     }
 
-    func seek(to time: TimeInterval) { cmd(["seek", String(time), "absolute"]) }
+    func seek(to time: TimeInterval) { cmd(["seek", String(time), "absolute+keyframes"]) }
+    func seekExact(to time: TimeInterval) { cmd(["seek", String(time), "absolute"]) }
     func setPlaying(_ playing: Bool) { cmd(["set", "pause", playing ? "no" : "yes"]) }
     func setVolume(_ volume: Double) { cmd(["set", "volume", String(volume)]) }
 
@@ -298,8 +301,13 @@ final class MPVController {
                 let prop = d.assumingMemoryBound(to: MPVEventProperty.self).pointee
                 if prop.format == MPV_FORMAT_DOUBLE,
                    let dp = prop.data?.assumingMemoryBound(to: Double.self) {
-                    let t = dp.pointee
-                    if t >= 0 { DispatchQueue.main.async { [weak self] in self?.onTimeUpdate?(t) } }
+                    let value = dp.pointee
+                    let propName = prop.name.map { String(cString: $0) } ?? ""
+                    if propName == "duration", value > 0 {
+                        DispatchQueue.main.async { [weak self] in self?.onDuration?(value) }
+                    } else if propName == "time-pos", value >= 0 {
+                        DispatchQueue.main.async { [weak self] in self?.onTimeUpdate?(value) }
+                    }
                 }
             }
         }

@@ -22,7 +22,9 @@ class PlayerViewModel: ObservableObject {
     @Published var useMPV = false
     @Published var isPlaying = false
     @Published var showSubtitles = true
-    @Published var volume: Double = 100 {
+    @Published var currentTime: Double = 0
+    @Published var videoDuration: Double = 0
+    @Published var volume: Double = 50 {
         didSet {
             if useMPV { mpvController?.setVolume(volume) }
             else { player.volume = Float(volume / 100.0) }
@@ -84,6 +86,8 @@ class PlayerViewModel: ObservableObject {
         isPreparing = false
         isLoadingSubtitles = true
         loadingStatus = "提取字幕中…"
+        currentTime = 0
+        videoDuration = 0
         subtitleCache = [:]
 
         Task { await extractSubtitles(from: url) }
@@ -122,6 +126,9 @@ class PlayerViewModel: ObservableObject {
         let ctrl = MPVController()
         ctrl.onTimeUpdate = { [weak self] time in
             self?.syncCurrentSubtitle(at: time)
+        }
+        ctrl.onDuration = { [weak self] dur in
+            self?.videoDuration = dur
         }
         // 立即 prepare：加载 libmpv、初始化、开始解码
         // GL 层出现后会自动调用 setupRenderContext，画面就渲染在我们的 View 里
@@ -282,6 +289,10 @@ class PlayerViewModel: ObservableObject {
 
     private func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
+        currentTime = time
+        if !useMPV, let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 {
+            videoDuration = dur
+        }
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
         // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
@@ -296,16 +307,27 @@ class PlayerViewModel: ObservableObject {
 
     // MARK: - Navigation
 
-    func jumpToSubtitle(_ subtitle: Subtitle) {
+    func seek(to time: Double) {
         if let mpv = mpvController {
-            mpv.seek(to: subtitle.startTime)
-            mpv.setPlaying(true)
-            isPlaying = true
+            mpv.seekExact(to: time)
+        } else {
+            let t = CMTime(seconds: time, preferredTimescale: 600)
+            player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
+    func jumpToSubtitle(_ subtitle: Subtitle) {
+        currentTime = subtitle.startTime
+        if let mpv = mpvController {
+            mpv.seekExact(to: subtitle.startTime)
+            if !isPlaying {
+                mpv.setPlaying(true)
+                isPlaying = true
+            }
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-            if player.timeControlStatus != .playing { player.play() }
-            isPlaying = true
+            if player.timeControlStatus != .playing { player.play(); isPlaying = true }
         }
     }
 
