@@ -30,9 +30,7 @@ struct ContentView: View {
         }
         .onAppear {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                // Ignore if any modifier key held
                 guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
-                // Ignore if a text field has focus
                 if let r = NSApp.keyWindow?.firstResponder, r is NSTextView { return event }
                 switch event.keyCode {
                 case 0:  vm.previousSubtitle();       return nil  // A
@@ -59,6 +57,10 @@ struct ContentView: View {
                     } else if let err = vm.videoError {
                         videoErrorOverlay(err)
                     }
+                    // ── Subtitle overlay ─────────────────────────
+                    // Driven by vm.subtitles / currentSubtitleIndex / showSubtitles,
+                    // so it automatically reflects track switches and the eye-toggle.
+                    videoSubtitleOverlay
                 }
                 .frame(minWidth: 420, minHeight: 280)
 
@@ -70,6 +72,35 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             NavigationBarView(vm: vm, showSidebar: $showSidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var videoSubtitleOverlay: some View {
+        if vm.showSubtitles,
+           vm.currentSubtitleIndex >= 0,
+           vm.currentSubtitleIndex < vm.subtitles.count {
+            let text = vm.subtitles[vm.currentSubtitleIndex].cleanText
+            if !text.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(text)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .shadow(color: .black, radius: 1, x: 1, y: 1)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.black.opacity(0.55))
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 18)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+            }
         }
     }
 
@@ -117,9 +148,7 @@ struct ContentView: View {
                 if let u = item as? URL { return u }
                 return nil
             }()
-            if let url {
-                DispatchQueue.main.async { vm.loadVideo(url: url) }
-            }
+            if let url { DispatchQueue.main.async { vm.loadVideo(url: url) } }
         }
         return true
     }
@@ -137,19 +166,15 @@ struct DropZoneView: View {
                 .font(.system(size: 52))
                 .foregroundStyle(isTargeted ? Color.accentColor : Color(.tertiaryLabelColor))
                 .animation(.spring(duration: 0.2), value: isTargeted)
-
             Text("拖入视频文件")
                 .font(.title3.weight(.medium))
                 .foregroundStyle(.secondary)
-
             Text("或")
                 .font(.callout)
                 .foregroundStyle(.tertiary)
-
             Button("选择视频…", action: onOpen)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-
             Text("支持 MKV · MP4 · MOV · AVI 及伴随字幕文件")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -183,95 +208,75 @@ struct NavigationBarView: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 0) {
-                controlButtons
-                    .padding(.leading, 8)
 
-                Divider()
-                    .frame(height: 18)
-                    .padding(.horizontal, 8)
+                // ── 播放控制 ──────────────────────────────────
+                BarButton(icon: "stop.fill", help: "回到片头", action: vm.stopPlayback)
+                BarButton(icon: vm.isPlaying ? "pause.fill" : "play.fill",
+                          help: vm.isPlaying ? "暂停 (Space)" : "播放 (Space)",
+                          action: vm.togglePlayPause)
 
-                navButtons
+                barDivider
 
-                Divider()
-                    .frame(height: 18)
-                    .padding(.horizontal, 8)
+                // ── 字幕导航 ──────────────────────────────────
+                BarButton(icon: "backward.end.fill", help: "上一条字幕 (A)",
+                          disabled: vm.subtitles.isEmpty,
+                          action: vm.previousSubtitle)
+                BarButton(icon: "arrow.counterclockwise", help: "回到当前字幕起点 (S)",
+                          disabled: vm.currentSubtitleIndex < 0,
+                          action: vm.restartCurrentSubtitle)
+                BarButton(icon: "forward.end.fill", help: "下一条字幕 (D)",
+                          disabled: vm.currentSubtitleIndex >= vm.subtitles.count - 1 || vm.subtitles.isEmpty,
+                          action: vm.nextSubtitle)
 
+                barDivider
+
+                // ── 字幕开关 ──────────────────────────────────
+                BarButton(icon: vm.showSubtitles ? "captions.bubble.fill" : "captions.bubble",
+                          help: vm.showSubtitles ? "隐藏字幕（练听力）" : "显示字幕",
+                          tint: vm.showSubtitles ? nil : .secondary,
+                          action: { vm.showSubtitles.toggle() })
+
+                barDivider
+
+                // ── 字幕文本 + 复制 ───────────────────────────
                 subtitleLabel
-
                 copyButton
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 4)
 
                 Spacer(minLength: 4)
 
+                // ── 音量 ──────────────────────────────────────
                 volumeControl
                     .padding(.trailing, 8)
 
+                // ── 位置 / 侧边栏 ─────────────────────────────
                 positionLabel
                     .padding(.trailing, 8)
 
-                sidebarToggle
-                    .padding(.trailing, 8)
+                BarButton(icon: "sidebar.trailing",
+                          help: showSidebar ? "隐藏字幕列表" : "显示字幕列表",
+                          tint: showSidebar ? nil : .accentColor,
+                          action: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } })
+                    .padding(.trailing, 6)
             }
             .frame(height: 44)
             .background(.background)
         }
     }
 
-    private var controlButtons: some View {
-        HStack(spacing: 2) {
-            NavButton(icon: "stop.fill", label: "回到片头", action: vm.stopPlayback, enabled: true)
-            NavButton(icon: vm.isPlaying ? "pause.fill" : "play.fill",
-                      label: vm.isPlaying ? "暂停 (Space)" : "播放 (Space)",
-                      action: vm.togglePlayPause, enabled: true)
-        }
-    }
+    // MARK: helpers
 
-    private var navButtons: some View {
-        HStack(spacing: 2) {
-            NavButton(icon: "backward.end.fill", label: "上一条字幕 (A)", action: vm.previousSubtitle,
-                      enabled: !vm.subtitles.isEmpty)
-            NavButton(icon: "arrow.counterclockwise", label: "回到当前字幕起点 (S)", action: vm.restartCurrentSubtitle,
-                      enabled: vm.currentSubtitleIndex >= 0)
-            NavButton(icon: "forward.end.fill", label: "下一条字幕 (D)", action: vm.nextSubtitle,
-                      enabled: vm.currentSubtitleIndex < vm.subtitles.count - 1 && !vm.subtitles.isEmpty)
-        }
-    }
-
-    private var copyButton: some View {
-        Button {
-            guard let text = current?.cleanText, !text.isEmpty else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            copiedFlash = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copiedFlash = false }
-        } label: {
-            Image(systemName: copiedFlash ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 26, height: 26)
-                .contentShape(Rectangle())
-                .foregroundStyle(copiedFlash ? Color.accentColor : (current != nil ? Color.primary : Color(.tertiaryLabelColor)))
-        }
-        .buttonStyle(.borderless)
-        .disabled(current == nil)
-        .help("复制当前字幕")
-        .animation(.easeInOut(duration: 0.15), value: copiedFlash)
-    }
-
-    private var volumeControl: some View {
-        HStack(spacing: 4) {
-            Image(systemName: vm.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            Slider(value: $vm.volume, in: 0...100)
-                .frame(width: 80)
-                .controlSize(.mini)
-        }
+    private var barDivider: some View {
+        Divider().frame(height: 18).padding(.horizontal, 6)
     }
 
     private var subtitleLabel: some View {
         Group {
-            if let sub = current {
+            if !vm.showSubtitles {
+                Label("字幕已隐藏", systemImage: "eye.slash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            } else if let sub = current {
                 Text(sub.cleanText)
                     .font(.system(size: 12.5))
                     .lineLimit(2)
@@ -285,6 +290,33 @@ struct NavigationBarView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var copyButton: some View {
+        BarButton(
+            icon: copiedFlash ? "checkmark" : "doc.on.doc",
+            help: "复制当前字幕",
+            tint: copiedFlash ? .accentColor : nil,
+            disabled: current == nil || !vm.showSubtitles,
+            action: {
+            guard let text = current?.cleanText, !text.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copiedFlash = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copiedFlash = false }
+        })
+    }
+
+    private var volumeControl: some View {
+        HStack(spacing: 4) {
+            Image(systemName: vm.volume < 1 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Slider(value: $vm.volume, in: 0...100)
+                .frame(width: 80)
+                .controlSize(.mini)
+        }
+    }
+
     private var positionLabel: some View {
         Group {
             if !vm.subtitles.isEmpty {
@@ -295,27 +327,18 @@ struct NavigationBarView: View {
             }
         }
     }
-
-    private var sidebarToggle: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }
-        } label: {
-            Image(systemName: showSidebar ? "sidebar.trailing" : "sidebar.trailing")
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-                .foregroundStyle(showSidebar ? Color.primary : Color.accentColor)
-        }
-        .buttonStyle(.borderless)
-        .help(showSidebar ? "隐藏字幕列表" : "显示字幕列表")
-    }
 }
 
-struct NavButton: View {
+// MARK: - BarButton  (unified icon button with hover + press feedback)
+
+struct BarButton: View {
     let icon: String
-    let label: String
+    let help: String
+    var tint: Color? = nil        // nil = inherit foreground
+    var disabled: Bool = false
     let action: () -> Void
-    let enabled: Bool
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
@@ -323,10 +346,36 @@ struct NavButton: View {
                 .font(.system(size: 13, weight: .medium))
                 .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
+                .foregroundStyle(foregroundColor)
         }
-        .buttonStyle(.borderless)
-        .foregroundStyle(enabled ? .primary : Color(.tertiaryLabelColor))
-        .disabled(!enabled)
-        .help(label)
+        .buttonStyle(PressScaleStyle())
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHovered && !disabled
+                      ? Color.primary.opacity(0.08)
+                      : Color.clear)
+                .animation(.easeOut(duration: 0.12), value: isHovered)
+        )
+        .disabled(disabled)
+        .help(help)
+        .onHover { isHovered = !disabled && $0 }
+    }
+
+    private var foregroundColor: Color {
+        if disabled { return Color(.tertiaryLabelColor) }
+        if let t = tint { return t }
+        return Color.primary
     }
 }
+
+/// Scales down on press; no default button chrome.
+struct PressScaleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.82 : 1.0)
+            .animation(.easeOut(duration: 0.07), value: configuration.isPressed)
+    }
+}
+
+// NavButton kept for any legacy call sites
+typealias NavButton = BarButton

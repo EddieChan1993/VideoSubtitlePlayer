@@ -145,6 +145,10 @@ final class MPVController {
         opt("yes",    "keep-open")
         opt("quiet",  "msg-level")
         opt("libmpv", "vo")
+        // Disable mpv's built-in subtitle rendering;
+        // subtitles are displayed via the SwiftUI overlay in ContentView instead,
+        // which gives us full control over visibility and track switching.
+        opt("no",     "sub-visibility")
 
         guard fn_init?(mpvCtx) == 0 else { return false }
 

@@ -17,6 +17,7 @@ class PlayerViewModel: ObservableObject {
 
     @Published var useMPV = false
     @Published var isPlaying = false
+    @Published var showSubtitles = true
     @Published var volume: Double = 100 {
         didSet {
             if useMPV { mpvController?.setVolume(volume) }
@@ -291,10 +292,12 @@ class PlayerViewModel: ObservableObject {
         if let mpv = mpvController {
             mpv.seek(to: subtitle.startTime)
             mpv.setPlaying(true)
+            isPlaying = true
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
             if player.timeControlStatus != .playing { player.play() }
+            isPlaying = true
         }
     }
 

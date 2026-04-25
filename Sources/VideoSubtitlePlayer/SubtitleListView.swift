@@ -81,25 +81,25 @@ struct SubtitleListView: View {
 
     private func buildOptions() -> [TrackOption] {
         let tracks = vm.availableTracks
+        guard !tracks.isEmpty else { return [] }
+
+        let engTrack = tracks.first { $0.isEnglish }
+        let cnTrack  = tracks.first { $0.isChinese }
         var options: [TrackOption] = []
 
-        // Individual tracks
-        for track in tracks {
-            options.append(TrackOption(label: track.displayName, mode: .single(track)))
-        }
-
-        // Bilingual combos: pair Chinese with each non-Chinese, or English with each non-English
-        let chinese = tracks.filter { $0.isChinese }
-        let english = tracks.filter { $0.isEnglish }
-        for cn in chinese {
-            for en in english {
+        if let en = engTrack {
+            // 1. English only
+            options.append(TrackOption(label: "英文", mode: .single(en)))
+            // 2. Bilingual Chinese+English (if both exist)
+            if let cn = cnTrack {
                 options.append(TrackOption(label: "双语 中/英", mode: .bilingual(cn, en)))
             }
-        }
-
-        // Non-CN/EN bilingual pairs (e.g. two different language tracks)
-        if chinese.isEmpty && english.isEmpty && tracks.count >= 2 {
-            options.append(TrackOption(label: "双语", mode: .bilingual(tracks[0], tracks[1])))
+        } else {
+            // Fallback: first track + bilingual if 2+ tracks
+            options.append(TrackOption(label: tracks[0].displayName, mode: .single(tracks[0])))
+            if tracks.count >= 2 {
+                options.append(TrackOption(label: "双语", mode: .bilingual(tracks[0], tracks[1])))
+            }
         }
 
         return options
