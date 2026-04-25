@@ -5,27 +5,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 构建与运行
 
 ```bash
-swift build                        # 编译
-swift run                          # 编译并运行
-swift build 2>&1 | grep -E "error:|Build complete"   # 只看错误/结果
+swift build                                        # 编译
+swift run                                          # 编译并运行
+swift build 2>&1 | grep -E "error:|Build complete" # 只看错误/结果
 ```
 
 无 Xcode 工程，无沙盒限制，以 `swift run` 方式运行。macOS 14+ 目标平台。
 
-## 打包为 .app
+## 打包为 .app（SubMelon）
 
 ```bash
-./make_app.sh          # 交互询问 Apple ID（回车跳过）
-./make_app.sh -a       # 自动读取当前登录 Apple ID 绑定
-./make_app.sh -i x@y   # 直接指定 Apple ID
-./make_app.sh -h       # 帮助
+./make_app.sh                                  # 不绑定，生成 SubMelon.app
+./make_app.sh -a                               # 自动读取当前登录 Apple ID
+./make_app.sh -i user@icloud.com               # 单用户
+./make_app.sh -i u1@x.com,u2@y.com,u3@z.com   # 批量，逗号分隔
+./make_app.sh -l ids.txt                       # 批量，文件每行一个 Apple ID
+./make_app.sh -h                               # 帮助
 ```
+
+**打包产物命名规则：**
+- 不绑定 → `SubMelon.app`
+- 绑定 `hat666666@163.com` → `SubMelon-hat666666.app`（取 @ 前的用户名）
+
+**打包流程（make_app.sh 内部）：**
+1. 生成图标（`swift make_icon.swift` → `iconutil`）
+2. `swift build -c release` 编译
+3. 组装暂存目录（含 libmpv + ffmpeg 依赖，仅做一次）
+4. 对每个 Apple ID：复制暂存 → 写 Info.plist → 签名
+5. 清理暂存，输出所有 .app 列表
+
+**接收方首次打开（绕过 Gatekeeper）：**
+```bash
+xattr -rd com.apple.quarantine SubMelon-xxx.app
+```
+或右键 → 打开 → 打开。
 
 ## 依赖
 
-- **libmpv**（Homebrew）：`brew install mpv`，路径 `/opt/homebrew/lib/libmpv.dylib`，通过 `dlopen` 运行时加载，无编译期链接。
-- **FFmpeg**（Homebrew）：`brew install ffmpeg`，路径 `/opt/homebrew/bin/ffmpeg`，用于字幕提取。
-- 两者均为可选依赖，缺失时有降级路径。
+构建机需要 `brew install mpv ffmpeg`，make_app.sh 会自动将以下内容打包进 .app：
+
+| 文件 | 位置 | 说明 |
+|------|------|------|
+| libmpv.dylib + 50 个依赖 dylib | `Contents/Frameworks/` | 视频解码，`dlopen` 加载 |
+| ffmpeg 二进制 | `Contents/MacOS/ffmpeg` | 字幕提取子进程 |
+
+所有 Homebrew 路径已被 `install_name_tool` 改写为 `@executable_path/../Frameworks/`。
+**接收方无需安装任何依赖，即开即用。**
+
+代码查找顺序（Bundle 优先，开发期 fallback 到 Homebrew）：
+- `SubtitleExtractor.ffmpegPath`：先找 `Bundle/MacOS/ffmpeg`，再找 Homebrew
+- `MPVController.libraryPath`：先找 `Bundle/Frameworks/libmpv.dylib`，再找 Homebrew
 
 ---
 
@@ -34,7 +63,7 @@ swift build 2>&1 | grep -E "error:|Build complete"   # 只看错误/结果
 ### 应用生命周期
 
 `PlayerViewModel` 创建在 `App` 级别（`VideoSubtitleApp` 的 `@StateObject`），通过 `.environmentObject()` 传给 `ContentView`。  
-**不要**将 VM 放在 `ContentView` 的 `@StateObject`——这样关窗口会销毁 VM，再开窗口时视频状态丢失，且 mpv 仍在后台播放。
+**不要**将 VM 放在 `ContentView` 的 `@StateObject`——关窗口会销毁 VM，再开窗口时视频状态丢失，且 mpv 仍在后台播放。
 
 ```
 VideoSubtitleApp (@StateObject PlayerViewModel)
@@ -63,24 +92,26 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 **`MPVPlayerView.swift`** — `MPVHostView: NSView`：
 - `wantsLayer=true`，`layer.contents` 直接接收 `CGImage`。
-- `viewDidMoveToWindow`：每次 view 出现时重连 `mpvController.onNeedsDisplay`（窗口关闭再开时自动重新绑定）。
+- `viewDidMoveToWindow`：每次 view 出现时重连 `mpvController.onNeedsDisplay`。
 - `setFrameSize` 覆盖：SwiftUI 改尺寸走这里，不走 `layout()`，必须在此更新 `renderW/H`。
+- `hasPendingFrame`：渲染进行中收到新帧时置 true，渲染完成后立即补渲一帧，防止帧丢失。
 
 ### 字幕流水线
 
 `SubtitleExtractor` 两阶段：
 1. **立即阶段**（`extractImmediate`）：并发提取流 0/1，伴随文件优先，快速呈现首屏字幕。
-2. **后台阶段**（`listTracksWithLabels`）：解析 `ffmpeg -i` stderr 获取完整轨道信息，`preCacheOtherTracks` 后台预缓存所有轨道。
+2. **后台阶段**（`listTracksWithLabels`）：解析 `ffmpeg -i` stderr 获取完整轨道信息，`preCacheOtherTracks` 后台预缓存所有轨道（延迟 2 秒启动，避免与 MPV 争 CPU）。
 
 `SubtitleMode`（`single` / `bilingual`）实现 `Hashable`，作为 `[SubtitleMode: [Subtitle]]` 缓存键。
 
-**默认轨道策略**（`autoSelectMode`）：始终加载 `tracks[0]`（第一个检测到的轨道），用户通过侧边栏 Chip 手动切换双语。
+**默认轨道策略**（`autoSelectMode`）：始终加载 `tracks[0]`，用户通过侧边栏 Chip 手动切换双语。  
+**双语 Tab 标签**：固定显示"双语"，不随语言检测结果变化。
 
 ### 字幕状态双索引
 
 | 变量 | 含义 | 用途 |
 |------|------|------|
-| `currentSubtitleIndex` | 当前时间命中的字幕（两条字幕之间为 -1） | 视频浮层文字、底部字幕栏、复制按钮 |
+| `currentSubtitleIndex` | 当前时间命中的字幕（间隙时为 -1） | 视频浮层文字、底部字幕栏、复制按钮 |
 | `sidebarHighlightIndex` | 最近命中过的字幕，只前进不后退（永不退回 -1） | 侧边栏行高亮、自动滚动 |
 
 `syncCurrentSubtitle(at:)` 同时维护两者；新视频/切轨时都重置为 -1。
@@ -90,129 +121,14 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 **mpv 内置字幕渲染已禁用**（`sub-visibility=no`），由 SwiftUI 层统一管理：
 
 - **视频浮层**（`videoSubtitleOverlay`）：ZStack 顶层，读 `subtitles[currentSubtitleIndex].cleanText`，受 `showSubtitles` 控制。
-- **底部字幕栏**：`NavigationBarView.subtitleLabel`，同样受 `showSubtitles` 控制。
+- **底部字幕栏**：`NavigationBarView.subtitleLabel`，锁定到 `sidebarHighlightIndex`（间隙时保持上一条）。
 
-切换轨道或隐藏字幕后两处自动同步，无需向 mpv 发命令。
+### Apple ID 授权绑定
 
-### Apple ID 设备绑定
-
-- **打包**：`make_app.sh` 读取 Apple ID（`-a` 自动 / `-i` 指定 / 手动输入），写入 `Info.plist` 的 `BoundAppleID` 键。
+- **打包**：`make_app.sh` 将 Apple ID 写入 `Info.plist` 的 `BoundAppleID` 键，文件名取用户名前缀（`@` 前）。
 - **运行时**：`LicenseCheck.validateOrQuit()` 在 `App.init()` 中调用，读取 `~/Library/Preferences/MobileMeAccounts.plist`，与 `Bundle.main.infoDictionary["BoundAppleID"]` 对比；不匹配则弹 NSAlert "请联系软件授权：wx DC_Wen" 后退出。
 - `BoundAppleID` 为空时（开发模式）跳过检查。
-
-### C ABI 说明
-
-`MPVController` 所有 libmpv 函数指针通过 `sym<T>(_:)` + `unsafeBitCast` 从 `dlsym` 转换。  
-`MPVRenderParam`：`type: Int32` + 4 字节 `_pad`，总 16 字节，与 C 端 `mpv_render_param` 对齐。  
-字符串参数（如 `"sw"`）必须用 `withCString` 嵌套传递，防止 ARC 提前释放。
-
----
-
-## 已修复的 Bug 及根本原因
-
-### Bug 1 — 视频黑屏（只有声音，无画面）
-
-| | |
-|---|---|
-| **现象** | 导入视频后音频正常播放，视频区域全黑 |
-| **根本原因** | `mpv_render_context_create()` 在 `loadfile` **之后**调用。mpv 在 `loadfile` 时寻找 VO，若 context 尚未建立则跳过视频解码管线，后续无法补救 |
-| **修复** | `setupRenderContext()` 移到 `cmd(["loadfile", ...])` 之前 |
-| **文件** | `MPVController.swift` — `prepare(url:)` |
-
-### Bug 2 — 播放/暂停、音量命令无效
-
-| | |
-|---|---|
-| **现象** | 点击暂停或拖动音量滑块无效果 |
-| **根本原因** | `cmd(["set_property", ...])` — `set_property` 是 Lua 脚本 API，不是 `mpv_command` 的合法命令；静默失败 |
-| **修复** | 全部改为 `cmd(["set", "pause", "yes"])` / `cmd(["set", "volume", "50"])` |
-| **文件** | `MPVController.swift` — `setPlaying()`, `setVolume()` |
-
-### Bug 3 — 键盘快捷键 A/S/D 不生效
-
-| | |
-|---|---|
-| **现象** | 按 A/S/D 无反应 |
-| **根本原因 1** | SwiftUI `.keyboardShortcut` 作用于零尺寸隐形 Button 时在 macOS 上不可靠 |
-| **根本原因 2** | `event.charactersIgnoringModifiers?.lowercased()` 依赖键盘布局，中文输入法下可能失败 |
-| **修复** | `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` + `event.keyCode`（A=0, S=1, D=2, Space=49），`onAppear` 注册 |
-| **文件** | `ContentView.swift` — `ContentView.body.onAppear` |
-
-### Bug 4 — 字幕导航后暂停按钮未同步为播放状态
-
-| | |
-|---|---|
-| **现象** | 暂停时点字幕导航，视频恢复播放，但按钮图标仍为「播放」 |
-| **根本原因** | `jumpToSubtitle()` 调用 `mpv.setPlaying(true)` 但未更新 `PlayerViewModel.isPlaying` |
-| **修复** | 两个分支（MPV / AVPlayer）均加 `isPlaying = true` |
-| **文件** | `PlayerViewModel.swift` — `jumpToSubtitle()` |
-
-### Bug 5 — 隐藏字幕时视频浮层仍显示
-
-| | |
-|---|---|
-| **现象** | 点「隐藏字幕」后底部栏消失，但视频画面字幕依然可见 |
-| **根本原因** | mpv 默认自行渲染字幕并烘焙进视频帧，SwiftUI 的 `showSubtitles` 不影响 mpv 渲染管线 |
-| **修复** | `opt("no", "sub-visibility")` 禁用 mpv 字幕；改用 SwiftUI `videoSubtitleOverlay`，统一由 `showSubtitles` 驱动 |
-| **文件** | `MPVController.swift` — `prepare()`；`ContentView.swift` — `videoSubtitleOverlay` |
-
-### Bug 6 — 双语字幕显示三行（英文+中文+英文）
-
-| | |
-|---|---|
-| **现象** | 双语模式字幕出现「ENG\nCHN\nENG」 |
-| **根本原因** | 主轨道字幕已包含 "ENG\nCHN"，合并时朴素追加次轨道行，导致英文重复 |
-| **修复** | `mergeBilingual()` 改为行级去重：将主轨道行放入 Set，次轨道中命中的行跳过 |
-| **文件** | `SubtitleExtractor.swift` — `mergeBilingual()` |
-
-### Bug 7 — 轨道标签显示「Track 1」而非语言名
-
-| | |
-|---|---|
-| **现象** | ffmpeg 无语言标签时，选项 Chip 显示「Track 1」 |
-| **根本原因** | 无 `language` 元数据时直接使用 `track.displayName` |
-| **修复** | `trackLabel(for:)` 新增内容检测：抽取前 15 条字幕，比较 CJK/Latin 字符比例，推断语言 |
-| **文件** | `PlayerViewModel.swift` — `trackLabel(for:)`；`SubtitleExtractor.swift` — `languageLabel(from:)` |
-
-### Bug 8 — 字幕间隙时侧边栏高亮丢失
-
-| | |
-|---|---|
-| **现象** | 两条字幕之间无字幕的时段，侧边栏高亮消失，用户不知道当前位置 |
-| **根本原因** | `currentSubtitleIndex` 在间隙时置为 -1，侧边栏直接绑定此值 |
-| **修复** | 新增 `sidebarHighlightIndex`：只在有字幕命中（`idx >= 0`）时更新，永不退回 -1；侧边栏改用此值 |
-| **文件** | `PlayerViewModel.swift`；`SubtitleListView.swift` |
-
-### Bug 9 — 关窗后再开回到初始状态（视频仍后台播放）
-
-| | |
-|---|---|
-| **现象** | 点红 X 关窗，从 Dock 重新打开，显示空白"选择视频"界面，但 mpv 仍在后台播放 |
-| **根本原因** | `PlayerViewModel` 用 `@StateObject` 创建在 `ContentView`，关窗时 view 被销毁，VM 随之销毁（新窗口创建全新 VM），但 mpv 生命周期与 VM 未完全同步 |
-| **修复** | 将 VM 提升至 `App` 级别：`VideoSubtitleApp` 持有 `@StateObject var playerVM`，通过 `.environmentObject()` 注入；`ContentView` 改用 `@EnvironmentObject` |
-| **文件** | `App.swift`；`ContentView.swift` |
-
-### Bug 10 — 音量滑块默认 50% 但实际播放音量 100%
-
-| | |
-|---|---|
-| **现象** | 滑块视觉上在中间，但打开视频后声音响度与音量 100% 一致 |
-| **根本原因** | `switchToMPV` 中未调用 `setVolume`；MPV 默认初始音量 100%，与 VM 的 `volume=50` 不同步 |
-| **修复** | `ctrl.prepare(url: url)` 之后立即调用 `ctrl.setVolume(volume)` |
-| **文件** | `PlayerViewModel.swift` — `switchToMPV()` |
-
-### Bug 11 — 切换字幕轨道后侧边栏不定位到当前播放位置
-
-| | |
-|---|---|
-| **现象** | 点击「双语」Tab 后，字幕列表停在顶部而非当前播放处 |
-| **根本原因** | `selectMode()` 切换后重置了 `currentSubtitleIndex = -1`，未计算当前播放时间对应的新轨道字幕索引；`sidebarHighlightIndex` 未变化时 `onChange` 不触发滚动 |
-| **修复** | 切换后根据 `currentPlaybackTime` 计算新索引；新增 `sidebarScrollTrigger` 整数递增强制触发侧边栏滚动 |
-| **文件** | `PlayerViewModel.swift` — `selectMode()`、`loadSubtitles()`；`SubtitleListView.swift` — `onChange(sidebarScrollTrigger)` |
-
----
-
-## 功能模块
+- **批量打包**：编译 + 依赖打包只做一次，每个 Apple ID 只复制暂存 + 写 plist + 签名，效率高。
 
 ### 字幕导出（CSV）
 
@@ -222,16 +138,109 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 - 列：序号 / 开始时间 / 结束时间 / 字幕
 - 工具栏右侧「导出字幕」按钮触发；无字幕时禁用
 
-### 视频标题
-
-`PlayerViewModel.videoTitle`（`@Published`）在 `loadVideo` 时设为文件名（无扩展名）。  
-`ContentView` 通过 `.onReceive(vm.$videoTitle)` 同步到 `NSApp.keyWindow?.title`，工具栏 `.principal` 区域同步显示。
-
 ### 强制侧边栏滚动机制
 
 `sidebarScrollTrigger: Int`（`@Published`）每次切轨或异步加载完成时 `+= 1`。  
 `SubtitleListView` 的 `onChange(of: vm.sidebarScrollTrigger)` 响应，调用 `proxy.scrollTo(sidebarHighlightIndex)`。  
 解决 `sidebarHighlightIndex` 值不变时 `onChange` 不触发的问题。
+
+### C ABI 说明
+
+`MPVController` 所有 libmpv 函数指针通过 `sym<T>(_:)` + `unsafeBitCast` 从 `dlsym` 转换。  
+`MPVRenderParam`：`type: Int32` + 4 字节 `_pad`，总 16 字节，与 C 端 `mpv_render_param` 对齐。  
+字符串参数（如 `"sw"`）必须用 `withCString` 嵌套传递，防止 ARC 提前释放。
+
+---
+
+## 已修复的 Bug
+
+### Bug 1 — 视频黑屏（只有声音，无画面）
+| | |
+|---|---|
+| **现象** | 导入视频后音频正常播放，视频区域全黑 |
+| **根本原因** | `mpv_render_context_create()` 在 `loadfile` **之后**调用，VO 初始化失败且不可补救 |
+| **修复** | `setupRenderContext()` 移到 `cmd(["loadfile", ...])` 之前 |
+| **文件** | `MPVController.swift` — `prepare(url:)` |
+
+### Bug 2 — 播放/暂停、音量命令无效
+| | |
+|---|---|
+| **现象** | 点击暂停或拖动音量滑块无效果 |
+| **根本原因** | `cmd(["set_property", ...])` — `set_property` 是 Lua 脚本 API，`mpv_command` 不认；静默失败 |
+| **修复** | 改为 `cmd(["set", "pause", "yes"])` / `cmd(["set", "volume", "50"])` |
+| **文件** | `MPVController.swift` — `setPlaying()`, `setVolume()` |
+
+### Bug 3 — 键盘快捷键 A/S/D 不生效
+| | |
+|---|---|
+| **现象** | 按 A/S/D 无反应 |
+| **根本原因 1** | SwiftUI `.keyboardShortcut` 对无修饰键的单字母在 macOS 上不可靠 |
+| **根本原因 2** | `event.charactersIgnoringModifiers` 依赖键盘布局，中文输入法下可能失败 |
+| **修复** | `NSEvent.addLocalMonitorForEvents` + `event.keyCode`（A=0, S=1, D=2, Space=49） |
+| **文件** | `ContentView.swift` — `onAppear` |
+
+### Bug 4 — 字幕导航后暂停按钮未同步
+| | |
+|---|---|
+| **现象** | 暂停时点字幕导航，视频恢复播放，但按钮图标仍为「播放」 |
+| **根本原因** | `jumpToSubtitle()` 调用 `mpv.setPlaying(true)` 但未更新 `isPlaying` |
+| **修复** | 两个分支（MPV / AVPlayer）均加 `isPlaying = true` |
+| **文件** | `PlayerViewModel.swift` — `jumpToSubtitle()` |
+
+### Bug 5 — 隐藏字幕后视频浮层仍显示
+| | |
+|---|---|
+| **现象** | 点「隐藏字幕」后底部栏消失，但视频画面字幕依然可见 |
+| **根本原因** | mpv 默认自行渲染字幕并烘焙进帧，SwiftUI 的 `showSubtitles` 无法控制 |
+| **修复** | `opt("no", "sub-visibility")` 禁用 mpv 字幕；改用 SwiftUI `videoSubtitleOverlay` |
+| **文件** | `MPVController.swift` — `prepare()`；`ContentView.swift` — `videoSubtitleOverlay` |
+
+### Bug 6 — 双语字幕显示三行（英文+中文+英文）
+| | |
+|---|---|
+| **现象** | 双语模式出现「ENG\nCHN\nENG」 |
+| **根本原因** | 主轨道已含「ENG\nCHN」，朴素追加次轨道导致英文重复 |
+| **修复** | `mergeBilingual()` 行级去重 |
+| **文件** | `SubtitleExtractor.swift` — `mergeBilingual()` |
+
+### Bug 7 — 轨道标签显示「Track 1」
+| | |
+|---|---|
+| **现象** | ffmpeg 无语言标签时，Chip 显示「Track 1」 |
+| **修复** | `trackLabel(for:)` 内容检测：前 15 条字幕 CJK/Latin 字符比例推断语言 |
+| **文件** | `PlayerViewModel.swift`；`SubtitleExtractor.swift` — `languageLabel(from:)` |
+
+### Bug 8 — 字幕间隙时侧边栏高亮丢失
+| | |
+|---|---|
+| **现象** | 两条字幕之间侧边栏高亮消失 |
+| **根本原因** | `currentSubtitleIndex` 在间隙时置 -1，侧边栏直接绑定此值 |
+| **修复** | 新增 `sidebarHighlightIndex`，只前进不退回 -1 |
+| **文件** | `PlayerViewModel.swift`；`SubtitleListView.swift` |
+
+### Bug 9 — 关窗后再开回到初始状态
+| | |
+|---|---|
+| **现象** | 关窗再开，显示空白界面，mpv 仍在后台播放 |
+| **根本原因** | VM 在 `ContentView` 的 `@StateObject`，关窗时销毁 |
+| **修复** | VM 提升至 App 级别，`@EnvironmentObject` 注入 |
+| **文件** | `App.swift`；`ContentView.swift` |
+
+### Bug 10 — 音量滑块 50% 但实际音量 100%
+| | |
+|---|---|
+| **现象** | 滑块在中间，声音却是最大 |
+| **根本原因** | `switchToMPV` 未调用 `setVolume`；MPV 默认 100% |
+| **修复** | `ctrl.prepare()` 后立即 `ctrl.setVolume(volume)` |
+| **文件** | `PlayerViewModel.swift` — `switchToMPV()` |
+
+### Bug 11 — 切换字幕轨道后侧边栏不定位
+| | |
+|---|---|
+| **现象** | 点「双语」Tab，字幕列表停在顶部 |
+| **根本原因** | `sidebarHighlightIndex` 值未变时 `onChange` 不触发 |
+| **修复** | 新增 `sidebarScrollTrigger` 自增强制触发滚动 |
+| **文件** | `PlayerViewModel.swift`；`SubtitleListView.swift` |
 
 ---
 
@@ -241,8 +250,10 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 2. **mpv 命令字符串**：`mpv_command` 用 `"set"` 设置属性；`"set_property"` 是 Lua API，二者不可混用。
 3. **macOS 键盘拦截**：SwiftUI `.keyboardShortcut` 对无修饰键的单字母快捷键不可靠；`NSEvent.addLocalMonitorForEvents` + `keyCode` 是唯一可靠方案。
 4. **UI 状态与后端同步**：凡通过 mpv 命令改变播放状态的地方，必须同时更新 `@Published` 变量，否则 SwiftUI 视图漂移。
-5. **字幕渲染归属**：若需 SwiftUI 层控制字幕（显隐/切轨），必须禁用 mpv 内置渲染，否则无法统一管理两套系统。
-6. **有状态 View Model 的生命周期**：持有重型资源（网络连接、媒体播放器）的 VM 应放在 App 级别，避免随窗口销毁。
-7. **侧边栏索引与活跃索引分离**：UI 呈现（高亮/滚动）和逻辑状态（当前是否命中字幕）需要分开维护，避免"间隙归零"导致 UI 跳动。
-8. **强制触发 SwiftUI onChange**：`onChange` 仅在值变化时触发。若需在"值可能不变"时也触发滚动/动画，应引入专用自增 trigger 变量（如 `sidebarScrollTrigger`），而不是依赖业务值本身。
-9. **MPV 初始状态同步**：MPV 实例创建后其所有属性（volume、speed 等）均为 MPV 默认值，必须在 `prepare` 之后立即同步 VM 中的对应 `@Published` 值，否则 UI 与实际状态分离。
+5. **字幕渲染归属**：若需 SwiftUI 层控制字幕（显隐/切轨），必须禁用 mpv 内置渲染，否则无法统一管理。
+6. **有状态 ViewModel 的生命周期**：持有重型资源的 VM 应放在 App 级别，避免随窗口销毁。
+7. **侧边栏索引与活跃索引分离**：UI 呈现（高亮/滚动）和逻辑状态（是否命中字幕）需分开维护，避免间隙归零导致 UI 跳动。
+8. **强制触发 SwiftUI onChange**：`onChange` 仅在值变化时触发；用专用自增 trigger 变量绕过"值相同不触发"的限制。
+9. **MPV 初始状态同步**：MPV 实例创建后所有属性均为默认值，必须在 `prepare` 后立即同步 VM 的对应 `@Published` 值。
+10. **动态库打包**：`install_name_tool -change` 修改引用路径后，对应 dylib 必须重新 `codesign`，否则签名校验失败。
+11. **批量打包效率**：编译和 dylib 复制只做一次放进暂存目录，每个发行版只需 `cp -r staging` + 写 plist + 签名，避免重复耗时操作。
