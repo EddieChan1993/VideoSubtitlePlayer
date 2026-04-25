@@ -95,8 +95,9 @@ struct SubtitleListView: View {
                 options.append(TrackOption(label: "双语 中/英", mode: .bilingual(cn, en)))
             }
         } else {
-            // Fallback: first track + bilingual if 2+ tracks
-            options.append(TrackOption(label: tracks[0].displayName, mode: .single(tracks[0])))
+            // Fallback: use content-based language detection for label
+            let label0 = vm.trackLabel(for: tracks[0])
+            options.append(TrackOption(label: label0, mode: .single(tracks[0])))
             if tracks.count >= 2 {
                 options.append(TrackOption(label: "双语", mode: .bilingual(tracks[0], tracks[1])))
             }

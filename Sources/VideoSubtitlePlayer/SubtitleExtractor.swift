@@ -221,6 +221,21 @@ enum SubtitleExtractor {
         return sorted.enumerated().map { Subtitle(id: $0, startTime: $1.startTime, endTime: $1.endTime, text: $1.text) }
     }
 
+    // MARK: - Language detection from content
+
+    /// Detects display label from subtitle content (used when ffmpeg reports no language tag).
+    /// Returns "英文", "中文", or nil when undetermined.
+    static func languageLabel(from subtitles: [Subtitle]) -> String? {
+        let text = subtitles.prefix(15).map { $0.cleanText }.joined()
+        guard !text.isEmpty else { return nil }
+        let cjk = text.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        let lat = text.unicodeScalars.filter {
+            ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122)
+        }.count
+        guard lat + cjk > 0 else { return nil }
+        return cjk > lat ? "中文" : "英文"
+    }
+
     // MARK: - Parse ffmpeg -i output
 
     /// Stream #0:2(chi): Subtitle: ass  →  SubtitleTrack(index:0, language:"chi")

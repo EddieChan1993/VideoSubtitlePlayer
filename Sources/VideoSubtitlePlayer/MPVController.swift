@@ -94,6 +94,11 @@ final class MPVController {
     private(set) var renderCtx: OpaquePointer?
     private var stopping = false
 
+    // Persistent pixel buffer — reallocated only when render dimensions change.
+    // Eliminates per-frame malloc/free churn (~3 MB at typical panel sizes).
+    private var pixelBuf:    UnsafeMutableRawPointer?
+    private var pixelBufSize = 0
+
     var onTimeUpdate:   ((TimeInterval) -> Void)?
     /// 主线程调用；有新帧时触发，调用方负责调用 renderFrameAsCGImage 并更新显示
     var onNeedsDisplay: (() -> Void)?
@@ -196,19 +201,23 @@ final class MPVController {
               width > 0, height > 0 else { return nil }
 
         let w = Int(width), h = Int(height)
-        // 64 字节对齐的 stride，满足 mpv SW 渲染的 SIMD 要求
-        let pixelBytes = 4
-        let strideRaw  = w * pixelBytes
-        let alignment  = 64
-        let stride     = ((strideRaw + alignment - 1) / alignment) * alignment
-        let byteCount  = stride * h
+        // 64-byte aligned stride satisfies mpv SW SIMD requirement
+        let alignment = 64
+        let stride    = ((w * 4 + alignment - 1) / alignment) * alignment
+        let byteCount = stride * h
 
-        // 分配 64 字节对齐的像素缓冲区，由 CGDataProvider 释放
-        let ptr = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: alignment)
+        // Reuse persistent buffer; reallocate only when size changes.
+        // This eliminates per-frame malloc/free of ~3 MB at typical panel sizes.
+        if byteCount != pixelBufSize {
+            pixelBuf?.deallocate()
+            pixelBuf     = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: alignment)
+            pixelBufSize = byteCount
+        }
+        guard let ptr = pixelBuf else { return nil }
 
-        var sz: [Int32]  = [width, height]
-        var strideVal: Int = stride
-        // BLOCK_FOR_TARGET_TIME=0：禁止阻塞等待帧时间，避免并发调用 render 时死锁/黑屏
+        var sz: [Int32] = [width, height]
+        var strideVal   = stride
+        // BLOCK_FOR_TARGET_TIME=0: never block waiting for vsync; prevents deadlock on concurrent render calls
         var noBlock: Int32 = 0
 
         let err: Int32 = sz.withUnsafeMutableBytes { szBuf in
@@ -235,23 +244,21 @@ final class MPVController {
                 }
             }
         }
+        guard err == 0 else { return nil }
 
-        guard err == 0 else { ptr.deallocate(); return nil }
+        // CGImage needs its own copy of the pixel data so ptr is immediately
+        // available for the next frame. CFDataCreate is a single memcpy; far
+        // cheaper than a fresh malloc+free of the full buffer every frame.
+        guard let cfData   = CFDataCreate(nil, ptr.assumingMemoryBound(to: UInt8.self), byteCount),
+              let provider = CGDataProvider(data: cfData)
+        else { return nil }
 
-        // CGDataProvider 拥有 ptr 的所有权，释放时调用 deallocate
-        let releasePtr: CGDataProviderReleaseDataCallback = { info, _, _ in
-            info?.deallocate()
-        }
-        guard let provider = CGDataProvider(
-            dataInfo: ptr, data: ptr, size: byteCount, releaseData: releasePtr)
-        else { ptr.deallocate(); return nil }
-
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
         return CGImage(width: w, height: h,
                        bitsPerComponent: 8, bitsPerPixel: 32,
-                       bytesPerRow: stride, space: colorSpace,
-                       bitmapInfo: bitmapInfo, provider: provider,
+                       bytesPerRow: stride,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider,
                        decode: nil, shouldInterpolate: false,
                        intent: .defaultIntent)
     }
@@ -264,6 +271,7 @@ final class MPVController {
         stopping = true
         if let rc = renderCtx { fn_renderFree?(rc); renderCtx = nil }
         if let c  = ctx       { fn_terminate?(c);   ctx = nil }
+        pixelBuf?.deallocate(); pixelBuf = nil; pixelBufSize = 0
         if lib != nil         { dlclose(lib);        lib = nil }
     }
 

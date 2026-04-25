@@ -334,6 +334,18 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Track label
+
+    /// Returns a display label for a track; falls back to content-based language detection
+    /// when the file has no language tag (shows "Track N").
+    func trackLabel(for track: SubtitleTrack) -> String {
+        if track.isEnglish { return "英文" }
+        if track.isChinese { return "中文" }
+        if let lang = track.language, !lang.isEmpty { return lang.uppercased() }
+        let cached = subtitleCache[.single(track)] ?? []
+        return SubtitleExtractor.languageLabel(from: cached) ?? track.displayName
+    }
+
     // MARK: - Playback control
 
     func togglePlayPause() {
