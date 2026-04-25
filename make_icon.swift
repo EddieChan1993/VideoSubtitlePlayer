@@ -27,7 +27,7 @@ func drawIcon(ctx: CGContext, s: CGFloat) {
 
     let bgGrad = CGGradient(
         colorsSpace: CGColorSpaceCreateDeviceRGB(),
-        colors: [hex(0x1A5E28), hex(0x2E8B42)] as CFArray,
+        colors: [hex(0x3DB85A), hex(0x58D472)] as CFArray,
         locations: [0, 1]
     )!
     ctx.drawLinearGradient(bgGrad,
@@ -36,7 +36,7 @@ func drawIcon(ctx: CGContext, s: CGFloat) {
     // Diagonal dark stripes (watermelon skin texture, larger icons only)
     if s >= 64 {
         ctx.saveGState()
-        ctx.setStrokeColor(hex(0x135020, 0.28))
+        ctx.setStrokeColor(hex(0x2A9444, 0.30))
         ctx.setLineWidth(s * 0.055)
         let step = s * 0.26
         var t: CGFloat = -s
@@ -79,12 +79,12 @@ func drawIcon(ctx: CGContext, s: CGFloat) {
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.012),
                       blur: s * 0.055,
-                      color: rgba(0, 0, 0, 0.35))
-        ctx.setFillColor(hex(0x1B5C27))
+                      color: rgba(0, 0, 0, 0.28))
+        ctx.setFillColor(hex(0x34A84E))
         ctx.addPath(domePath(outerR)); ctx.fillPath()
         ctx.restoreGState()
     } else {
-        ctx.setFillColor(hex(0x1B5C27))
+        ctx.setFillColor(hex(0x34A84E))
         ctx.addPath(domePath(outerR)); ctx.fillPath()
     }
 
