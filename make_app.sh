@@ -99,7 +99,8 @@ BIN=".build/release/$BINARY"
 # ── 组装 .app 包骨架 ──────────────────────────────────────────────────────────
 # 绑定了 Apple ID 时，将其附在包名后，方便区分不同授权用户的发行版
 if [ -n "$APPLE_ID" ]; then
-    APPDIR="${APP}-${APPLE_ID}.app"
+    APPLE_ID_PREFIX="${APPLE_ID%%@*}"   # 取 @ 前的用户名部分
+    APPDIR="${APP}-${APPLE_ID_PREFIX}.app"
 else
     APPDIR="${APP}.app"
 fi
