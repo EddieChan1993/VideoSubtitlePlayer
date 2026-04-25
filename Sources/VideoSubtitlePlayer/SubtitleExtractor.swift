@@ -188,8 +188,30 @@ enum SubtitleExtractor {
             let matches = secondary.enumerated().filter { !used.contains($0.offset) &&
                 max(sub.startTime, $0.element.startTime) < min(sub.endTime, $0.element.endTime) }
             matches.forEach { used.insert($0.offset) }
-            let text = matches.isEmpty ? sub.text
-                : sub.cleanText + "\n" + matches.map { $0.element.cleanText }.joined(separator: " ")
+
+            let text: String
+            if matches.isEmpty {
+                text = sub.text
+            } else {
+                // Deduplicate by line: only append secondary lines not already in primary.
+                // Handles the common case where one track already stores "English\nChinese"
+                // per entry — merging naively would produce "English\nChinese\nEnglish".
+                let primaryLines = Set(
+                    sub.cleanText
+                        .components(separatedBy: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                )
+                let newLines = matches.flatMap { m in
+                    m.element.cleanText
+                        .components(separatedBy: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty && !primaryLines.contains($0) }
+                }
+                text = newLines.isEmpty
+                    ? sub.cleanText
+                    : sub.cleanText + "\n" + newLines.joined(separator: "\n")
+            }
             result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: text))
         }
         for (j, sec) in secondary.enumerated() where !used.contains(j) {
