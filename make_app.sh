@@ -97,7 +97,12 @@ BIN=".build/release/$BINARY"
 [ -f "$BIN" ] || { echo "错误：找不到二进制文件 $BIN"; exit 1; }
 
 # ── 组装 .app 包骨架 ──────────────────────────────────────────────────────────
-APPDIR="${APP}.app"
+# 绑定了 Apple ID 时，将其附在包名后，方便区分不同授权用户的发行版
+if [ -n "$APPLE_ID" ]; then
+    APPDIR="${APP}-${APPLE_ID}.app"
+else
+    APPDIR="${APP}.app"
+fi
 CONTENTS="${APPDIR}/Contents"
 MACOS="${CONTENTS}/MacOS"
 RESOURCES="${CONTENTS}/Resources"
