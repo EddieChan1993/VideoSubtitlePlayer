@@ -24,7 +24,7 @@ BINARY="VideoSubtitlePlayer"
 APP="SubMelon"
 VERSION="1.1.0"
 BUNDLE_ID="com.submelon.app"
-MIN_OS="14.0"
+MIN_OS="13.0"
 
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
 usage() {

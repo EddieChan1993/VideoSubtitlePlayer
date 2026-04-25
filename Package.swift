@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "VideoSubtitlePlayer",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
             name: "VideoSubtitlePlayer",

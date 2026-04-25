@@ -128,10 +128,9 @@ struct SubtitleListView: View {
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
-                .onChange(of: vm.sidebarHighlightIndex) { _, idx in
+                .onChange(of: vm.sidebarHighlightIndex) { idx in
                     guard idx >= 0, idx < vm.subtitles.count else { return }
                     if vm.isScrubbing {
-                        // 拖动时无动画直接跳，避免多帧动画堆积定位不准
                         proxy.scrollTo(idx, anchor: .center)
                     } else {
                         withAnimation(.easeOut(duration: 0.25)) {
@@ -139,8 +138,7 @@ struct SubtitleListView: View {
                         }
                     }
                 }
-                .onChange(of: vm.sidebarScrollTrigger) { _, _ in
-                    // 切轨后强制定位，即使 sidebarHighlightIndex 值未变
+                .onChange(of: vm.sidebarScrollTrigger) { _ in
                     let idx = vm.sidebarHighlightIndex
                     guard idx >= 0, idx < vm.subtitles.count else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
