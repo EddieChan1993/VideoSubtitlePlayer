@@ -13,9 +13,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-APP="VideoSubtitlePlayer"
+BINARY="VideoSubtitlePlayer"   # Swift package target（编译产物名，不改）
+APP="SubMelon"                 # .app 包名 / Dock 显示名
 VERSION="1.1.0"
-BUNDLE_ID="com.videosubtitleplayer.app"
+BUNDLE_ID="com.submelon.app"
 MIN_OS="14.0"
 
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ fi
 echo "▶  编译 Release 版本…"
 swift build -c release
 
-BIN=".build/release/$APP"
+BIN=".build/release/$BINARY"
 [ -f "$BIN" ] || { echo "错误：找不到二进制文件 $BIN"; exit 1; }
 
 # ── 组装 .app 包 ──────────────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ RESOURCES="${CONTENTS}/Resources"
 echo "▶  组装 ${APPDIR}…"
 rm -rf "$APPDIR"
 mkdir -p "$MACOS" "$RESOURCES"
-cp "$BIN" "$MACOS/$APP"
+cp "$BIN" "$MACOS/$APP"   # 二进制重命名为 $APP，与 CFBundleExecutable 保持一致
 
 if [ -f "AppIcon.icns" ]; then
     cp AppIcon.icns "$RESOURCES/AppIcon.icns"
@@ -125,7 +126,7 @@ cat > "${CONTENTS}/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>               <string>${APP}</string>
-  <key>CFBundleDisplayName</key>        <string>Video Subtitle Player</string>
+  <key>CFBundleDisplayName</key>        <string>${APP}</string>
   <key>CFBundleIdentifier</key>         <string>${BUNDLE_ID}</string>
   <key>CFBundleVersion</key>            <string>${VERSION}</string>
   <key>CFBundleShortVersionString</key> <string>${VERSION}</string>
