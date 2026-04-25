@@ -3,10 +3,12 @@
 # make_app.sh  –  Build VideoSubtitlePlayer.app
 #
 # Usage:
-#   chmod +x make_app.sh
-#   ./make_app.sh
+#   ./make_app.sh              # 手动输入 Apple ID（留空跳过绑定）
+#   ./make_app.sh -a           # 自动读取当前登录的 Apple ID
+#   ./make_app.sh -i you@icloud.com  # 直接指定 Apple ID（非交互）
+#   ./make_app.sh -h           # 显示帮助
 #
-# Requirements: Xcode Command Line Tools (xcode-select --install)
+# Requirements: Xcode Command Line Tools  →  xcode-select --install
 #               brew install mpv ffmpeg
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -16,90 +18,92 @@ VERSION="1.1.0"
 BUNDLE_ID="com.videosubtitleplayer.app"
 MIN_OS="14.0"
 
-# ── 1. Apple ID binding ──────────────────────────────────────────────────────
-#
-# Default  : prompt for manual input (Enter = skip binding / dev mode)
-# --auto   : auto-detect from ~/Library/Preferences/MobileMeAccounts.plist
-# --apple-id <email> : use the given email directly (non-interactive)
-#
+# ── 帮助 ─────────────────────────────────────────────────────────────────────
+usage() {
+cat <<EOF
+用法：  ./make_app.sh [选项]
+
+选项：
+  -a            自动从系统读取当前 Apple ID（iCloud 账号邮箱）
+  -i <email>    手动指定 Apple ID（非交互，适合脚本调用）
+  -h            显示此帮助并退出
+
+不带任何选项时，会交互式询问是否绑定 Apple ID；直接回车跳过（开发模式）。
+
+绑定后的 .app 只能在当前 Apple ID 登录的 Mac 上运行；
+其他设备打开时会弹窗提示：请联系软件授权：wx DC_Wen
+EOF
+}
+
+# ── 解析参数 ─────────────────────────────────────────────────────────────────
 APPLE_ID=""
 AUTO_DETECT=false
 
-for arg in "$@"; do
-    case "$arg" in
-        --auto) AUTO_DETECT=true ;;
+while getopts ":ai:h" opt; do
+    case $opt in
+        a) AUTO_DETECT=true ;;
+        i) APPLE_ID="$OPTARG" ;;
+        h) usage; exit 0 ;;
+        :) echo "错误：-$OPTARG 需要一个参数"; usage; exit 1 ;;
+        \?) echo "错误：未知选项 -$OPTARG"; usage; exit 1 ;;
     esac
 done
 
-# Handle --apple-id <email>
-i=1
-while [ $i -le $# ]; do
-    eval "arg=\${$i}"
-    if [ "$arg" = "--apple-id" ]; then
-        j=$((i+1))
-        eval "APPLE_ID=\${$j}"
-        break
-    fi
-    i=$((i+1))
-done
-
+# ── Apple ID 决策 ─────────────────────────────────────────────────────────────
 if [ -z "$APPLE_ID" ] && $AUTO_DETECT; then
     MOBILEME_PLIST="$HOME/Library/Preferences/MobileMeAccounts.plist"
     if [ -f "$MOBILEME_PLIST" ]; then
         APPLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Accounts:0:AccountID" \
                        "$MOBILEME_PLIST" 2>/dev/null || true)
+        APPLE_ID=$(echo "$APPLE_ID" | tr -d '[:space:]')
     fi
     if [ -z "$APPLE_ID" ]; then
-        echo "⚠️   --auto: could not detect Apple ID — app will run on any machine."
+        echo "⚠️   -a：未能读取 Apple ID，将以开发模式打包（不绑定）"
     else
-        echo "▶  Auto-detected Apple ID: $APPLE_ID"
+        echo "▶  自动读取 Apple ID：$APPLE_ID"
     fi
 elif [ -z "$APPLE_ID" ]; then
     echo ""
-    printf "▶  Enter Apple ID to bind (leave empty to skip): "
+    printf "▶  绑定 Apple ID（留空跳过）：  "
     read -r APPLE_ID
     APPLE_ID=$(echo "$APPLE_ID" | tr -d '[:space:]')
 fi
 
 if [ -z "$APPLE_ID" ]; then
-    echo "   No Apple ID set — app will run on any machine (dev mode)."
+    echo "   未设置 Apple ID，开发模式（任意设备可运行）"
 else
-    echo "   Binding to Apple ID: $APPLE_ID"
+    echo "   绑定 Apple ID：$APPLE_ID"
 fi
 
-# ── 2. Generate app icon ─────────────────────────────────────────────────────
-echo "▶  Generating app icon…"
+# ── 生成图标 ─────────────────────────────────────────────────────────────────
+echo "▶  生成应用图标…"
 if swift make_icon.swift; then
     if [ -d "AppIcon.iconset" ]; then
         iconutil -c icns AppIcon.iconset -o AppIcon.icns
-        echo "   ✓  AppIcon.icns created"
+        echo "   ✓  AppIcon.icns 已生成"
     fi
 else
-    echo "⚠️   Icon generation failed — continuing without custom icon"
+    echo "⚠️   图标生成失败，跳过（不影响主程序）"
 fi
 
-# ── 3. Build release binary ──────────────────────────────────────────────────
-echo "▶  Building release binary…"
+# ── 编译 Release ──────────────────────────────────────────────────────────────
+echo "▶  编译 Release 版本…"
 swift build -c release
 
 BIN=".build/release/$APP"
-if [ ! -f "$BIN" ]; then
-  echo "Error: binary not found at $BIN"; exit 1
-fi
+[ -f "$BIN" ] || { echo "错误：找不到二进制文件 $BIN"; exit 1; }
 
-# ── 4. Assemble .app bundle ──────────────────────────────────────────────────
+# ── 组装 .app 包 ──────────────────────────────────────────────────────────────
 APPDIR="${APP}.app"
 CONTENTS="${APPDIR}/Contents"
 MACOS="${CONTENTS}/MacOS"
 RESOURCES="${CONTENTS}/Resources"
 
-echo "▶  Assembling ${APPDIR}…"
+echo "▶  组装 ${APPDIR}…"
 rm -rf "$APPDIR"
 mkdir -p "$MACOS" "$RESOURCES"
-
 cp "$BIN" "$MACOS/$APP"
 
-# Copy icon if it was generated
 if [ -f "AppIcon.icns" ]; then
     cp AppIcon.icns "$RESOURCES/AppIcon.icns"
     ICON_KEY='  <key>CFBundleIconFile</key>        <string>AppIcon</string>'
@@ -107,13 +111,13 @@ else
     ICON_KEY=""
 fi
 
-# ── 5. Write Info.plist (with optional BoundAppleID) ─────────────────────────
 if [ -n "$APPLE_ID" ]; then
     APPLE_ID_KEY="  <key>BoundAppleID</key>             <string>${APPLE_ID}</string>"
 else
     APPLE_ID_KEY=""
 fi
 
+# ── Info.plist ────────────────────────────────────────────────────────────────
 cat > "${CONTENTS}/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -152,19 +156,16 @@ ${APPLE_ID_KEY}
 </plist>
 PLIST
 
-# ── 6. Ad-hoc codesign ───────────────────────────────────────────────────────
-echo "▶  Signing (ad-hoc)…"
+# ── Ad-hoc 签名 ───────────────────────────────────────────────────────────────
+echo "▶  Ad-hoc 签名…"
 codesign --force --deep --sign - "$APPDIR"
 
 echo ""
-echo "✅  ${APPDIR} is ready."
-if [ -n "$APPLE_ID" ]; then
-    echo "   🔒  Bound to Apple ID: ${APPLE_ID}"
-fi
+echo "✅  ${APPDIR} 已就绪"
+[ -n "$APPLE_ID" ] && echo "   🔒  已绑定 Apple ID：${APPLE_ID}"
 echo ""
-echo "   Open now:          open '${APPDIR}'"
-echo "   Move to /Applications:"
-echo "                      mv '${APPDIR}' /Applications/"
+echo "   立即打开：    open '${APPDIR}'"
+echo "   移动到应用：  mv '${APPDIR}' /Applications/"
 echo ""
-echo "   First launch on a new machine: right-click → Open  (Gatekeeper bypass)"
-echo "   Or strip quarantine:  xattr -rd com.apple.quarantine '${APPDIR}'"
+echo "   首次打开提示：右键 → 打开  （绕过 Gatekeeper）"
+echo "   或执行：      xattr -rd com.apple.quarantine '${APPDIR}'"

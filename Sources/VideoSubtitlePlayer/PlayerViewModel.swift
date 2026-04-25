@@ -243,9 +243,8 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func autoSelectMode(from tracks: [SubtitleTrack]) -> SubtitleMode {
-        let cn = tracks.first { $0.isChinese }
-        let en = tracks.first { $0.isEnglish }
-        if let cn, let en { return .bilingual(cn, en) }
+        // Always start with the first available track.
+        // The user can switch to bilingual via the track picker in the sidebar.
         return .single(tracks[0])
     }
 
