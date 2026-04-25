@@ -16,18 +16,53 @@ VERSION="1.1.0"
 BUNDLE_ID="com.videosubtitleplayer.app"
 MIN_OS="14.0"
 
-# ── 1. Detect Apple ID ───────────────────────────────────────────────────────
-echo "▶  Detecting Apple ID…"
+# ── 1. Apple ID binding ──────────────────────────────────────────────────────
+#
+# Default  : prompt for manual input (Enter = skip binding / dev mode)
+# --auto   : auto-detect from ~/Library/Preferences/MobileMeAccounts.plist
+# --apple-id <email> : use the given email directly (non-interactive)
+#
 APPLE_ID=""
-MOBILEME_PLIST="$HOME/Library/Preferences/MobileMeAccounts.plist"
+AUTO_DETECT=false
 
-if [ -f "$MOBILEME_PLIST" ]; then
-    APPLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Accounts:0:AccountID" \
-                   "$MOBILEME_PLIST" 2>/dev/null || true)
+for arg in "$@"; do
+    case "$arg" in
+        --auto) AUTO_DETECT=true ;;
+    esac
+done
+
+# Handle --apple-id <email>
+i=1
+while [ $i -le $# ]; do
+    eval "arg=\${$i}"
+    if [ "$arg" = "--apple-id" ]; then
+        j=$((i+1))
+        eval "APPLE_ID=\${$j}"
+        break
+    fi
+    i=$((i+1))
+done
+
+if [ -z "$APPLE_ID" ] && $AUTO_DETECT; then
+    MOBILEME_PLIST="$HOME/Library/Preferences/MobileMeAccounts.plist"
+    if [ -f "$MOBILEME_PLIST" ]; then
+        APPLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Accounts:0:AccountID" \
+                       "$MOBILEME_PLIST" 2>/dev/null || true)
+    fi
+    if [ -z "$APPLE_ID" ]; then
+        echo "⚠️   --auto: could not detect Apple ID — app will run on any machine."
+    else
+        echo "▶  Auto-detected Apple ID: $APPLE_ID"
+    fi
+elif [ -z "$APPLE_ID" ]; then
+    echo ""
+    printf "▶  Enter Apple ID to bind (leave empty to skip): "
+    read -r APPLE_ID
+    APPLE_ID=$(echo "$APPLE_ID" | tr -d '[:space:]')
 fi
 
 if [ -z "$APPLE_ID" ]; then
-    echo "⚠️   No Apple ID found — app will run on any machine (dev mode)."
+    echo "   No Apple ID set — app will run on any machine (dev mode)."
 else
     echo "   Binding to Apple ID: $APPLE_ID"
 fi

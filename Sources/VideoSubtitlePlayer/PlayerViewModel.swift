@@ -7,6 +7,10 @@ class PlayerViewModel: ObservableObject {
 
     @Published var subtitles: [Subtitle] = []
     @Published var currentSubtitleIndex: Int = -1
+    /// Always holds the index of the last subtitle that was active.
+    /// Unlike currentSubtitleIndex it never resets to -1 between subtitles,
+    /// so the sidebar can keep the most-recently-seen subtitle highlighted.
+    @Published var sidebarHighlightIndex: Int = -1
     @Published var isVideoLoaded = false
     @Published var isLoadingSubtitles = false
     @Published var loadingStatus = ""
@@ -74,6 +78,7 @@ class PlayerViewModel: ObservableObject {
         availableTracks = []
         selectedMode = nil
         currentSubtitleIndex = -1
+        sidebarHighlightIndex = -1
         videoError = nil
         isPlaying = false
         isPreparing = false
@@ -233,6 +238,7 @@ class PlayerViewModel: ObservableObject {
         isLoadingSubtitles = true
         subtitles = []
         currentSubtitleIndex = -1
+        sidebarHighlightIndex = -1
         Task { await loadSubtitles(for: mode, url: url) }
     }
 
@@ -279,6 +285,9 @@ class PlayerViewModel: ObservableObject {
         currentPlaybackTime = time
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
+        // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
+        // This keeps the sidebar showing the last seen entry highlighted.
+        if idx >= 0 { sidebarHighlightIndex = idx }
     }
 
     /// 取当前播放位置（AVPlayer 或 MPV 均适用）

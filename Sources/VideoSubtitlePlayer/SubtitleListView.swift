@@ -115,14 +115,14 @@ struct SubtitleListView: View {
         } else {
             ScrollViewReader { proxy in
                 List(vm.subtitles) { sub in
-                    SubtitleRow(subtitle: sub, isCurrent: vm.currentSubtitleIndex == sub.id)
+                    SubtitleRow(subtitle: sub, isCurrent: vm.sidebarHighlightIndex == sub.id)
                         .contentShape(Rectangle())
                         .onTapGesture { vm.jumpToSubtitle(sub) }
                         .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
-                .onChange(of: vm.currentSubtitleIndex) { _, idx in
+                .onChange(of: vm.sidebarHighlightIndex) { _, idx in
                     guard idx >= 0, idx < vm.subtitles.count else { return }
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.25)) {

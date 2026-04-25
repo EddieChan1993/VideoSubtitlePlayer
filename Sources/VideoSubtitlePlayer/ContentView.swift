@@ -2,7 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject private var vm = PlayerViewModel()
+    // Provided by VideoSubtitleApp via .environmentObject(playerVM).
+    // Lives at app level so the video/subtitle state survives window close/reopen.
+    @EnvironmentObject private var vm: PlayerViewModel
     @State private var dropTargeted = false
     @State private var keyMonitor: Any?
     @State private var showSidebar = true
