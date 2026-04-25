@@ -24,6 +24,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openVideoFile)) { _ in
             vm.openFile()
         }
+        .onReceive(vm.$videoTitle) { title in
+            guard !title.isEmpty else { return }
+            NSApp.keyWindow?.title = title
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button(action: vm.openFile) {
@@ -31,11 +35,33 @@ struct ContentView: View {
                 }
                 .help("打开视频文件 (⌘O)")
             }
+            ToolbarItem(placement: .principal) {
+                if vm.isVideoLoaded, !vm.videoTitle.isEmpty {
+                    Text(vm.videoTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 260)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                if vm.isVideoLoaded {
+                    Button(action: vm.exportSubtitlesAsCSV) {
+                        Label("导出字幕", systemImage: "square.and.arrow.up")
+                    }
+                    .help("导出当前字幕为 CSV（可用 Excel 打开）")
+                    .disabled(vm.subtitles.isEmpty)
+                }
+            }
         }
         .onAppear {
+            // 先移除旧 monitor，防止多次 onAppear 时残留
+            if let old = keyMonitor { NSEvent.removeMonitor(old); keyMonitor = nil }
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
-                if let r = NSApp.keyWindow?.firstResponder, r is NSTextView { return event }
+                // 本 app 内有文本输入框获焦时，放行事件让其正常输入
+                let fr = NSApp.keyWindow?.firstResponder
+                if fr is NSTextView || fr is NSTextField { return event }
                 switch event.keyCode {
                 case 0:  vm.previousSubtitle();       return nil  // A
                 case 1:  vm.restartCurrentSubtitle(); return nil  // S
@@ -44,6 +70,9 @@ struct ContentView: View {
                 default: return event
                 }
             }
+        }
+        .onDisappear {
+            if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         }
     }
 
@@ -92,13 +121,19 @@ struct ContentView: View {
                 Slider(
                     value: Binding(
                         get: { isSeeking ? seekValue : vm.currentTime },
-                        set: { v in isSeeking = true; seekValue = v }
+                        set: { v in
+                            isSeeking = true
+                            vm.isScrubbing = true
+                            seekValue = v
+                            vm.previewSubtitleIndex(for: v)
+                        }
                     ),
                     in: 0...max(vm.videoDuration, 1)
                 ) { editing in
                     if !editing {
                         vm.seek(to: seekValue)
                         isSeeking = false
+                        vm.isScrubbing = false
                     }
                 }
                 .controlSize(.small)
@@ -254,9 +289,11 @@ struct NavigationBarView: View {
     @Binding var showSidebar: Bool
     @State private var copiedFlash = false
 
-    private var current: Subtitle? {
-        guard vm.currentSubtitleIndex >= 0, vm.currentSubtitleIndex < vm.subtitles.count else { return nil }
-        return vm.subtitles[vm.currentSubtitleIndex]
+    /// 底部栏锁定字幕：优先用侧边栏高亮（间隙时不清空），回退到当前播放
+    private var locked: Subtitle? {
+        let idx = vm.sidebarHighlightIndex >= 0 ? vm.sidebarHighlightIndex : vm.currentSubtitleIndex
+        guard idx >= 0, idx < vm.subtitles.count else { return nil }
+        return vm.subtitles[idx]
     }
 
     var body: some View {
@@ -274,13 +311,13 @@ struct NavigationBarView: View {
 
                 // ── 字幕导航 ──────────────────────────────────
                 BarButton(icon: "backward.end.fill", help: "上一条字幕 (A)",
-                          disabled: vm.subtitles.isEmpty,
+                          disabled: vm.sidebarHighlightIndex <= 0 && vm.subtitles.isEmpty,
                           action: vm.previousSubtitle)
-                BarButton(icon: "arrow.counterclockwise", help: "回到当前字幕起点 (S)",
-                          disabled: vm.currentSubtitleIndex < 0,
-                          action: vm.restartCurrentSubtitle)
+                BarButton(icon: "arrow.counterclockwise", help: "回到锁定字幕起点 (S)",
+                          disabled: vm.sidebarHighlightIndex < 0,
+                          action: vm.restartLockedSubtitle)
                 BarButton(icon: "forward.end.fill", help: "下一条字幕 (D)",
-                          disabled: vm.currentSubtitleIndex >= vm.subtitles.count - 1 || vm.subtitles.isEmpty,
+                          disabled: vm.sidebarHighlightIndex >= vm.subtitles.count - 1 || vm.subtitles.isEmpty,
                           action: vm.nextSubtitle)
 
                 barDivider
@@ -293,7 +330,7 @@ struct NavigationBarView: View {
 
                 barDivider
 
-                // ── 字幕文本 + 复制 ───────────────────────────
+                // ── 字幕文本 + 复制（锁定字幕，间隙时保持上一条）───────
                 subtitleLabel
                 copyButton
                     .padding(.horizontal, 4)
@@ -331,11 +368,11 @@ struct NavigationBarView: View {
                 Label("字幕已隐藏", systemImage: "eye.slash")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
-            } else if let sub = current {
+            } else if let sub = locked {
                 Text(sub.cleanText)
                     .font(.system(size: 12.5))
                     .lineLimit(2)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(vm.currentSubtitleIndex >= 0 ? .primary : .secondary)
             } else {
                 Text(vm.isLoadingSubtitles ? "正在提取字幕…" : "—")
                     .font(.system(size: 12.5))
@@ -348,11 +385,11 @@ struct NavigationBarView: View {
     private var copyButton: some View {
         BarButton(
             icon: copiedFlash ? "checkmark" : "doc.on.doc",
-            help: "复制当前字幕",
+            help: "复制锁定字幕",
             tint: copiedFlash ? .accentColor : nil,
-            disabled: current == nil || !vm.showSubtitles,
+            disabled: locked == nil || !vm.showSubtitles,
             action: {
-            guard let text = current?.cleanText, !text.isEmpty else { return }
+            guard let text = locked?.cleanText, !text.isEmpty else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             copiedFlash = true
@@ -367,7 +404,7 @@ struct NavigationBarView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
             Slider(value: $vm.volume, in: 0...100)
-                .frame(width: 80)
+                .frame(width: 96)
                 .controlSize(.mini)
         }
     }

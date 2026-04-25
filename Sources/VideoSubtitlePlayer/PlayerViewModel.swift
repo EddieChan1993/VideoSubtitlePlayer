@@ -24,6 +24,13 @@ class PlayerViewModel: ObservableObject {
     @Published var showSubtitles = true
     @Published var currentTime: Double = 0
     @Published var videoDuration: Double = 0
+    @Published var isScrubbing: Bool = false
+    /// track.id → 检测到的语言标签，异步更新后触发 tab 刷新
+    @Published var trackLabels: [Int: String] = [:]
+    /// 当前播放视频的文件名（无扩展名）
+    @Published var videoTitle: String = ""
+    /// 递增以强制侧边栏滚动到当前字幕（即使 sidebarHighlightIndex 未变化）
+    @Published var sidebarScrollTrigger = 0
     @Published var volume: Double = 50 {
         didSet {
             if useMPV { mpvController?.setVolume(volume) }
@@ -76,22 +83,34 @@ class PlayerViewModel: ObservableObject {
         cleanupTempFile()
 
         videoURL = url
+        videoTitle = url.deletingPathExtension().lastPathComponent
         subtitles = []
         availableTracks = []
         selectedMode = nil
         currentSubtitleIndex = -1
         sidebarHighlightIndex = -1
+        sidebarScrollTrigger = 0
         videoError = nil
+        isVideoLoaded = false   // 先回到初始界面，switchToMPV 成功后再置 true
         isPlaying = false
         isPreparing = false
         isLoadingSubtitles = true
         loadingStatus = "提取字幕中…"
         currentTime = 0
         videoDuration = 0
+        trackLabels = [:]
         subtitleCache = [:]
+        isScrubbing = false
 
-        Task { await extractSubtitles(from: url) }
-        playDirectly(url: url)
+        // 延迟 1.5 秒再启动 FFmpeg 字幕提取，让 MPV 先完成初始解码不争 CPU
+        Task {
+            try? await Task.sleep(for: .milliseconds(1500))
+            await extractSubtitles(from: url)
+        }
+        // 下一个 RunLoop tick 再启动播放，让 SwiftUI 先渲染重置状态（isVideoLoaded=false）
+        DispatchQueue.main.async { [weak self] in
+            self?.playDirectly(url: url)
+        }
     }
 
     @Published var isPreparing = false
@@ -133,6 +152,8 @@ class PlayerViewModel: ObservableObject {
         // 立即 prepare：加载 libmpv、初始化、开始解码
         // GL 层出现后会自动调用 setupRenderContext，画面就渲染在我们的 View 里
         ctrl.prepare(url: url)
+        // 同步音量初始值（MPV 默认音量 100%，与滑块默认 50 不一致）
+        ctrl.setVolume(volume)
         mpvController = ctrl
         useMPV = true
         isVideoLoaded = true
@@ -166,6 +187,9 @@ class PlayerViewModel: ObservableObject {
     private func extractSubtitles(from url: URL) async {
         let (immediateSubs, immediateTracks) = await SubtitleExtractor.extractImmediate(from: url)
 
+        // 立即检测第一条轨道语言，不等预缓存
+        let immediateLabel = SubtitleExtractor.languageLabel(from: immediateSubs)
+
         await MainActor.run {
             self.availableTracks = immediateTracks
             if !immediateSubs.isEmpty {
@@ -173,6 +197,9 @@ class PlayerViewModel: ObservableObject {
                     let mode = SubtitleMode.single(first)
                     self.selectedMode = mode
                     self.subtitleCache[mode] = immediateSubs
+                    if let label = immediateLabel {
+                        self.trackLabels[first.id] = label
+                    }
                 }
                 self.subtitles = immediateSubs
                 self.currentSubtitleIndex = -1
@@ -210,15 +237,25 @@ class PlayerViewModel: ObservableObject {
 
         if needsLoad { await loadSubtitles(for: mode, url: url) }
 
-        Task { await preCacheOtherTracks(tracksSnapshot, url: url, skipMode: mode) }
+        // 延迟 2 秒再启动预缓存，避免与 MPV 初始解码争 CPU 导致启动卡顿
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            await preCacheOtherTracks(tracksSnapshot, url: url, skipMode: mode)
+        }
     }
 
     private func preCacheOtherTracks(_ tracks: [SubtitleTrack], url: URL, skipMode: SubtitleMode) async {
         for track in tracks {
             let mode = SubtitleMode.single(track)
             guard mode != skipMode, subtitleCache[mode] == nil else { continue }
-            subtitleCache[mode] = await SubtitleExtractor.extract(from: url, track: track)
+            let subs = await SubtitleExtractor.extract(from: url, track: track)
+            subtitleCache[mode] = subs
+            // 检测语言并发布，触发 tab 标签刷新
+            if let label = SubtitleExtractor.languageLabel(from: subs) {
+                await MainActor.run { self.trackLabels[track.id] = label }
+            }
         }
+        // 预缓存双语（仅有明确语言标签时）
         let cn = tracks.filter { $0.isChinese }
         let en = tracks.filter { $0.isEnglish }
         for c in cn {
@@ -236,9 +273,17 @@ class PlayerViewModel: ObservableObject {
 
         if let cached = subtitleCache[mode] {
             subtitles = cached
-            currentSubtitleIndex = -1
+            let time = currentPlaybackTime
+            let idx = cached.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+            currentSubtitleIndex = idx
+            if idx >= 0 {
+                sidebarHighlightIndex = idx
+            } else if let nearest = cached.lastIndex(where: { $0.startTime <= time }) {
+                sidebarHighlightIndex = nearest
+            }
             isLoadingSubtitles = false
             loadingStatus = "已加载 \(cached.count) 条字幕"
+            sidebarScrollTrigger += 1
             return
         }
 
@@ -276,9 +321,17 @@ class PlayerViewModel: ObservableObject {
         await MainActor.run {
             guard self.selectedMode == mode else { return }
             self.subtitles = subs
-            self.currentSubtitleIndex = -1
+            let time = self.currentPlaybackTime
+            let idx = subs.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+            self.currentSubtitleIndex = idx
+            if idx >= 0 {
+                self.sidebarHighlightIndex = idx
+            } else if let nearest = subs.lastIndex(where: { $0.startTime <= time }) {
+                self.sidebarHighlightIndex = nearest
+            }
             self.isLoadingSubtitles = false
             self.loadingStatus = subs.isEmpty ? "无字幕内容" : "已加载 \(subs.count) 条字幕"
+            self.sidebarScrollTrigger += 1
         }
     }
 
@@ -286,10 +339,17 @@ class PlayerViewModel: ObservableObject {
 
     /// 记录最新播放时间，供导航函数在字幕间隙时使用
     private var currentPlaybackTime: TimeInterval = 0
+    /// 上次推送 currentTime 的墙钟时间（节流用，与播放位置无关）
+    private var lastTimePublish: CFTimeInterval = 0
 
     private func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
-        currentTime = time
+        // currentTime 节流：约 10fps 更新进度条，避免每帧触发 SwiftUI 全量重绘
+        let now = CACurrentMediaTime()
+        if now - lastTimePublish >= 0.1 || !isPlaying {
+            currentTime = time
+            lastTimePublish = now
+        }
         if !useMPV, let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 {
             videoDuration = dur
         }
@@ -297,7 +357,7 @@ class PlayerViewModel: ObservableObject {
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
         // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
         // This keeps the sidebar showing the last seen entry highlighted.
-        if idx >= 0 { sidebarHighlightIndex = idx }
+        if idx >= 0, idx != sidebarHighlightIndex { sidebarHighlightIndex = idx }
     }
 
     /// 取当前播放位置（AVPlayer 或 MPV 均适用）
@@ -308,11 +368,26 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Navigation
 
     func seek(to time: Double) {
+        // 立即更新 UI，不等 MPV 的 onTimeUpdate 回调，防止进度条松手后视觉弹回
+        currentTime = time
+        lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
             mpv.seekExact(to: time)
         } else {
             let t = CMTime(seconds: time, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
+    /// 拖动进度条时实时更新字幕高亮，不实际 seek 视频
+    func previewSubtitleIndex(for time: Double) {
+        let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+        currentSubtitleIndex = idx
+        // 拖动时找最近字幕（含间隙）用于侧边栏定位
+        if idx >= 0 {
+            sidebarHighlightIndex = idx
+        } else if let nearest = subtitles.lastIndex(where: { $0.startTime <= time }) {
+            sidebarHighlightIndex = nearest
         }
     }
 
@@ -346,8 +421,14 @@ class PlayerViewModel: ObservableObject {
     }
 
     func restartCurrentSubtitle() {
-        guard currentSubtitleIndex >= 0, currentSubtitleIndex < subtitles.count else { return }
-        jumpToSubtitle(subtitles[currentSubtitleIndex])
+        restartLockedSubtitle()
+    }
+
+    /// 跳回侧边栏锁定字幕（间隙时也可用）
+    func restartLockedSubtitle() {
+        let idx = sidebarHighlightIndex >= 0 ? sidebarHighlightIndex : currentSubtitleIndex
+        guard idx >= 0, idx < subtitles.count else { return }
+        jumpToSubtitle(subtitles[idx])
     }
 
     func nextSubtitle() {
@@ -372,8 +453,9 @@ class PlayerViewModel: ObservableObject {
         if track.isEnglish { return "英文" }
         if track.isChinese { return "中文" }
         if let lang = track.language, !lang.isEmpty { return lang.uppercased() }
-        let cached = subtitleCache[.single(track)] ?? []
-        return SubtitleExtractor.languageLabel(from: cached) ?? track.displayName
+        // 用异步检测结果（@Published），稳定更新不引起 tab 数量变化
+        if let detected = trackLabels[track.id] { return detected }
+        return "轨道 \(track.index + 1)"
     }
 
     // MARK: - Playback control
@@ -402,6 +484,36 @@ class PlayerViewModel: ObservableObject {
             player.pause()
         }
         isPlaying = false
+    }
+
+    // MARK: - Export
+
+    func exportSubtitlesAsCSV() {
+        guard !subtitles.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出字幕"
+        panel.nameFieldStringValue = (videoTitle.isEmpty ? "subtitles" : videoTitle) + ".csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // UTF-8 BOM ensures Excel opens the file with correct encoding
+        var csv = "\u{FEFF}序号,开始时间,结束时间,字幕\n"
+        for (i, sub) in subtitles.enumerated() {
+            let end = formatExportTime(sub.endTime)
+            let text = sub.cleanText
+                .replacingOccurrences(of: "\"", with: "\"\"")
+                .replacingOccurrences(of: "\n", with: " ")
+            csv += "\(i + 1),\(sub.startTimeString),\(end),\"\(text)\"\n"
+        }
+        try? csv.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func formatExportTime(_ t: TimeInterval) -> String {
+        let total = Int(t)
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: - Cleanup

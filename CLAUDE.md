@@ -192,6 +192,47 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | 将 VM 提升至 `App` 级别：`VideoSubtitleApp` 持有 `@StateObject var playerVM`，通过 `.environmentObject()` 注入；`ContentView` 改用 `@EnvironmentObject` |
 | **文件** | `App.swift`；`ContentView.swift` |
 
+### Bug 10 — 音量滑块默认 50% 但实际播放音量 100%
+
+| | |
+|---|---|
+| **现象** | 滑块视觉上在中间，但打开视频后声音响度与音量 100% 一致 |
+| **根本原因** | `switchToMPV` 中未调用 `setVolume`；MPV 默认初始音量 100%，与 VM 的 `volume=50` 不同步 |
+| **修复** | `ctrl.prepare(url: url)` 之后立即调用 `ctrl.setVolume(volume)` |
+| **文件** | `PlayerViewModel.swift` — `switchToMPV()` |
+
+### Bug 11 — 切换字幕轨道后侧边栏不定位到当前播放位置
+
+| | |
+|---|---|
+| **现象** | 点击「双语」Tab 后，字幕列表停在顶部而非当前播放处 |
+| **根本原因** | `selectMode()` 切换后重置了 `currentSubtitleIndex = -1`，未计算当前播放时间对应的新轨道字幕索引；`sidebarHighlightIndex` 未变化时 `onChange` 不触发滚动 |
+| **修复** | 切换后根据 `currentPlaybackTime` 计算新索引；新增 `sidebarScrollTrigger` 整数递增强制触发侧边栏滚动 |
+| **文件** | `PlayerViewModel.swift` — `selectMode()`、`loadSubtitles()`；`SubtitleListView.swift` — `onChange(sidebarScrollTrigger)` |
+
+---
+
+## 功能模块
+
+### 字幕导出（CSV）
+
+`PlayerViewModel.exportSubtitlesAsCSV()` 导出当前字幕轨道：
+- 触发 `NSSavePanel`，默认文件名为 `<视频名>.csv`
+- UTF-8 BOM 头（`\u{FEFF}`）确保 Excel 正确识别中文
+- 列：序号 / 开始时间 / 结束时间 / 字幕
+- 工具栏右侧「导出字幕」按钮触发；无字幕时禁用
+
+### 视频标题
+
+`PlayerViewModel.videoTitle`（`@Published`）在 `loadVideo` 时设为文件名（无扩展名）。  
+`ContentView` 通过 `.onReceive(vm.$videoTitle)` 同步到 `NSApp.keyWindow?.title`，工具栏 `.principal` 区域同步显示。
+
+### 强制侧边栏滚动机制
+
+`sidebarScrollTrigger: Int`（`@Published`）每次切轨或异步加载完成时 `+= 1`。  
+`SubtitleListView` 的 `onChange(of: vm.sidebarScrollTrigger)` 响应，调用 `proxy.scrollTo(sidebarHighlightIndex)`。  
+解决 `sidebarHighlightIndex` 值不变时 `onChange` 不触发的问题。
+
 ---
 
 ## 规律总结
@@ -203,3 +244,5 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 5. **字幕渲染归属**：若需 SwiftUI 层控制字幕（显隐/切轨），必须禁用 mpv 内置渲染，否则无法统一管理两套系统。
 6. **有状态 View Model 的生命周期**：持有重型资源（网络连接、媒体播放器）的 VM 应放在 App 级别，避免随窗口销毁。
 7. **侧边栏索引与活跃索引分离**：UI 呈现（高亮/滚动）和逻辑状态（当前是否命中字幕）需要分开维护，避免"间隙归零"导致 UI 跳动。
+8. **强制触发 SwiftUI onChange**：`onChange` 仅在值变化时触发。若需在"值可能不变"时也触发滚动/动画，应引入专用自增 trigger 变量（如 `sidebarScrollTrigger`），而不是依赖业务值本身。
+9. **MPV 初始状态同步**：MPV 实例创建后其所有属性（volume、speed 等）均为 MPV 默认值，必须在 `prepare` 之后立即同步 VM 中的对应 `@Published` 值，否则 UI 与实际状态分离。

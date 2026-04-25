@@ -83,24 +83,30 @@ struct SubtitleListView: View {
         let tracks = vm.availableTracks
         guard !tracks.isEmpty else { return [] }
 
-        let engTrack = tracks.first { $0.isEnglish }
-        let cnTrack  = tracks.first { $0.isChinese }
+        // 结构固定：单轨选项 + 双语（如有第二轨）
+        // 不做去重，不依赖内容检测时机，保证 tab 数量稳定不跳变
         var options: [TrackOption] = []
 
-        if let en = engTrack {
-            // 1. English only
-            options.append(TrackOption(label: "英文", mode: .single(en)))
-            // 2. Bilingual Chinese+English (if both exist)
-            if let cn = cnTrack {
-                options.append(TrackOption(label: "双语 中/英", mode: .bilingual(cn, en)))
+        // 单轨：只展示第一条（主字幕）
+        let primary = tracks[0]
+        options.append(TrackOption(label: vm.trackLabel(for: primary), mode: .single(primary)))
+
+        // 双语：有第二条轨道时始终提供
+        if tracks.count >= 2 {
+            let secondary = tracks[1]
+            // 中文在上、英文在下；无法判断时 tracks[0] 为主
+            let cn = tracks.first { $0.isChinese }
+            let en = tracks.first { $0.isEnglish }
+            let (biPrimary, biSecondary): (SubtitleTrack, SubtitleTrack)
+            if let cn, let en { (biPrimary, biSecondary) = (cn, en) }
+            else {
+                let l0 = vm.trackLabel(for: tracks[0])
+                let l1 = vm.trackLabel(for: tracks[1])
+                (biPrimary, biSecondary) = (l0 == "中文") ? (tracks[0], tracks[1]) : (tracks[1], tracks[0])
             }
-        } else {
-            // Fallback: use content-based language detection for label
-            let label0 = vm.trackLabel(for: tracks[0])
-            options.append(TrackOption(label: label0, mode: .single(tracks[0])))
-            if tracks.count >= 2 {
-                options.append(TrackOption(label: "双语", mode: .bilingual(tracks[0], tracks[1])))
-            }
+            let biLabel = "双语"
+            options.append(TrackOption(label: biLabel, mode: .bilingual(biPrimary, biSecondary)))
+            _ = secondary // suppress warning
         }
 
         return options
@@ -124,10 +130,21 @@ struct SubtitleListView: View {
                 .listStyle(.plain)
                 .onChange(of: vm.sidebarHighlightIndex) { _, idx in
                     guard idx >= 0, idx < vm.subtitles.count else { return }
-                    DispatchQueue.main.async {
+                    if vm.isScrubbing {
+                        // 拖动时无动画直接跳，避免多帧动画堆积定位不准
+                        proxy.scrollTo(idx, anchor: .center)
+                    } else {
                         withAnimation(.easeOut(duration: 0.25)) {
                             proxy.scrollTo(idx, anchor: .center)
                         }
+                    }
+                }
+                .onChange(of: vm.sidebarScrollTrigger) { _, _ in
+                    // 切轨后强制定位，即使 sidebarHighlightIndex 值未变
+                    let idx = vm.sidebarHighlightIndex
+                    guard idx >= 0, idx < vm.subtitles.count else { return }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(idx, anchor: .center)
                     }
                 }
             }
