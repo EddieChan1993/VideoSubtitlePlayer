@@ -10,9 +10,10 @@ final class MPVHostView: NSView {
 
     weak var mpvController: MPVController?
 
-    private let renderQueue = DispatchQueue(label: "mpv.render", qos: .userInteractive)
-    private var contextReady  = false
-    private var pendingRender = false   // 主线程访问，防止 render 任务堆积
+    private let renderQueue = DispatchQueue(label: "mpv.render", qos: .userInitiated)
+    private var contextReady   = false
+    private var pendingRender  = false  // 主线程访问，防止 render 任务堆积
+    private var hasPendingFrame = false // 渲染进行中收到新 onNeedsDisplay，完成后立即补渲
 
     // 主线程写、renderQueue 读；Int32 原子读写足够
     private var renderW = Int32(0)
@@ -28,6 +29,7 @@ final class MPVHostView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
     override var isOpaque: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
 
     // MARK: - 生命周期
 
@@ -72,22 +74,30 @@ final class MPVHostView: NSView {
     // MARK: - 渲染调度（主线程）
 
     private func scheduleRender() {
-        // pendingRender 防止 renderQueue 任务堆积
-        guard !pendingRender else { return }
+        guard !pendingRender else {
+            // 渲染进行中收到新帧通知，标记以便完成后立即补渲
+            hasPendingFrame = true
+            return
+        }
         let w = renderW, h = renderH
         guard w > 0, h > 0 else { return }
 
+        hasPendingFrame = false
         pendingRender = true
         renderQueue.async { [weak self] in
             guard let self else { return }
             let img = self.mpvController?.renderFrameAsCGImage(width: w, height: h)
             DispatchQueue.main.async { [weak self] in
-                self?.pendingRender = false
-                guard let img else { return }
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self?.layer?.contents = img
-                CATransaction.commit()
+                guard let self else { return }
+                self.pendingRender = false
+                if let img {
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    self.layer?.contents = img
+                    CATransaction.commit()
+                }
+                // 补渲：渲染期间收到了新帧信号，立即再渲一帧不等下次回调
+                if self.hasPendingFrame { self.scheduleRender() }
             }
         }
     }
