@@ -80,12 +80,22 @@ private func mpvRenderUpdateCallback(_ ctx: UnsafeMutableRawPointer?) {
 /// 不创建原生窗口，不依赖 OpenGL/Metal。
 final class MPVController {
 
-    static let libraryPath: String? = [
-        "/opt/homebrew/lib/libmpv.dylib",
-        "/opt/homebrew/lib/libmpv.2.dylib",
-        "/usr/local/lib/libmpv.dylib",
-        "/usr/local/lib/libmpv.2.dylib",
-    ].first { FileManager.default.fileExists(atPath: $0) }
+    static let libraryPath: String? = {
+        let fm = FileManager.default
+        // 优先使用 Bundle 内打包的 libmpv（发布包无需 Homebrew）
+        if let fw = Bundle.main.privateFrameworksURL {
+            for name in ["libmpv.dylib", "libmpv.2.dylib"] {
+                let p = fw.appendingPathComponent(name).path
+                if fm.fileExists(atPath: p) { return p }
+            }
+        }
+        return [
+            "/opt/homebrew/lib/libmpv.dylib",
+            "/opt/homebrew/lib/libmpv.2.dylib",
+            "/usr/local/lib/libmpv.dylib",
+            "/usr/local/lib/libmpv.2.dylib",
+        ].first { fm.fileExists(atPath: $0) }
+    }()
 
     static var isAvailable: Bool { libraryPath != nil }
 

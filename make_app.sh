@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# make_app.sh  –  Build VideoSubtitlePlayer.app
+# make_app.sh  –  Build SubMelon.app（含 libmpv + ffmpeg，即开即用）
 #
 # Usage:
 #   ./make_app.sh              # 手动输入 Apple ID（留空跳过绑定）
@@ -8,8 +8,10 @@
 #   ./make_app.sh -i you@icloud.com  # 直接指定 Apple ID（非交互）
 #   ./make_app.sh -h           # 显示帮助
 #
-# Requirements: Xcode Command Line Tools  →  xcode-select --install
-#               brew install mpv ffmpeg
+# 构建机要求：
+#   xcode-select --install
+#   brew install mpv ffmpeg
+# 发布后接收方无需安装任何依赖，直接双击运行。
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -94,17 +96,89 @@ swift build -c release
 BIN=".build/release/$BINARY"
 [ -f "$BIN" ] || { echo "错误：找不到二进制文件 $BIN"; exit 1; }
 
-# ── 组装 .app 包 ──────────────────────────────────────────────────────────────
+# ── 组装 .app 包骨架 ──────────────────────────────────────────────────────────
 APPDIR="${APP}.app"
 CONTENTS="${APPDIR}/Contents"
 MACOS="${CONTENTS}/MacOS"
 RESOURCES="${CONTENTS}/Resources"
+FRAMEWORKS="${CONTENTS}/Frameworks"
 
 echo "▶  组装 ${APPDIR}…"
 rm -rf "$APPDIR"
-mkdir -p "$MACOS" "$RESOURCES"
-cp "$BIN" "$MACOS/$APP"   # 二进制重命名为 $APP，与 CFBundleExecutable 保持一致
+mkdir -p "$MACOS" "$RESOURCES" "$FRAMEWORKS"
+cp "$BIN" "$MACOS/$APP"   # 二进制重命名为 $APP，与 CFBundleExecutable 一致
 
+# ── 打包依赖库（dylib 递归复制 + 路径修正）───────────────────────────────────
+#
+# bundle_dylib <src_path>
+#   将 src 复制到 Contents/Frameworks/，修改其 install name，
+#   并递归处理所有 Homebrew 依赖链。
+#   使用 process substitution 而非管道，确保递归调用在同一 shell 进程内
+#   （管道右侧在子 shell 中，文件系统写入可见但函数递归调用可能丢失）。
+#
+bundle_dylib() {
+    local src="$1"
+    [ -f "$src" ] || return 0
+    local name; name=$(basename "$src")
+    local dst="$FRAMEWORKS/$name"
+    [ -f "$dst" ] && return 0   # 已复制，跳过（防止循环依赖死循环）
+
+    cp "$src" "$dst"
+    chmod 644 "$dst"
+    # 重写 dylib 自身的 install name → @executable_path/../Frameworks/<name>
+    install_name_tool -id "@executable_path/../Frameworks/$name" "$dst" 2>/dev/null || true
+
+    # 逐条修改 Homebrew 依赖引用，并递归复制该依赖
+    while IFS= read -r dep; do
+        local dep_name; dep_name=$(basename "$dep")
+        install_name_tool -change "$dep" \
+            "@executable_path/../Frameworks/$dep_name" "$dst" 2>/dev/null || true
+        bundle_dylib "$dep"
+    done < <(otool -L "$src" 2>/dev/null \
+               | awk 'NR>1{print $1}' \
+               | grep -E "^(/opt/homebrew|/usr/local)")
+}
+
+# ── 打包 libmpv ───────────────────────────────────────────────────────────────
+echo "▶  打包 libmpv…"
+LIBMPV_SRC=$(find /opt/homebrew/lib /usr/local/lib \
+    \( -name "libmpv.dylib" -o -name "libmpv.*.dylib" \) 2>/dev/null \
+    | grep -v '@' | sort | head -1 || true)
+
+if [ -n "$LIBMPV_SRC" ]; then
+    bundle_dylib "$LIBMPV_SRC"
+    # 版本号命名（如 libmpv.2.dylib）时补一个无版本号的符号链接供 dlopen 使用
+    LIBMPV_NAME=$(basename "$LIBMPV_SRC")
+    if [ "$LIBMPV_NAME" != "libmpv.dylib" ] && [ ! -f "$FRAMEWORKS/libmpv.dylib" ]; then
+        ln -sf "$LIBMPV_NAME" "$FRAMEWORKS/libmpv.dylib"
+    fi
+    echo "   ✓  libmpv 及依赖已打包"
+else
+    echo "⚠️   未找到 libmpv（brew install mpv），视频解码将降级为 AVFoundation"
+fi
+
+# ── 打包 ffmpeg ───────────────────────────────────────────────────────────────
+echo "▶  打包 ffmpeg…"
+FFMPEG_SRC=$(command -v ffmpeg 2>/dev/null || true)
+
+if [ -n "$FFMPEG_SRC" ]; then
+    cp "$FFMPEG_SRC" "$MACOS/ffmpeg"
+    chmod +x "$MACOS/ffmpeg"
+    # 修复 ffmpeg 对 Homebrew dylib 的引用
+    while IFS= read -r dep; do
+        dep_name=$(basename "$dep")
+        install_name_tool -change "$dep" \
+            "@executable_path/../Frameworks/$dep_name" "$MACOS/ffmpeg" 2>/dev/null || true
+        bundle_dylib "$dep"
+    done < <(otool -L "$FFMPEG_SRC" 2>/dev/null \
+               | awk 'NR>1{print $1}' \
+               | grep -E "^(/opt/homebrew|/usr/local)")
+    echo "   ✓  ffmpeg 及依赖已打包"
+else
+    echo "⚠️   未找到 ffmpeg（brew install ffmpeg），字幕提取将不可用"
+fi
+
+# ── 图标 & Info.plist ─────────────────────────────────────────────────────────
 if [ -f "AppIcon.icns" ]; then
     cp AppIcon.icns "$RESOURCES/AppIcon.icns"
     ICON_KEY='  <key>CFBundleIconFile</key>        <string>AppIcon</string>'
@@ -118,7 +192,6 @@ else
     APPLE_ID_KEY=""
 fi
 
-# ── Info.plist ────────────────────────────────────────────────────────────────
 cat > "${CONTENTS}/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -157,12 +230,19 @@ ${APPLE_ID_KEY}
 </plist>
 PLIST
 
-# ── Ad-hoc 签名 ───────────────────────────────────────────────────────────────
-echo "▶  Ad-hoc 签名…"
+# ── 签名（先签各 dylib，再签整个 .app）───────────────────────────────────────
+echo "▶  签名…"
+# 逐个签 Frameworks 内的 dylib（install_name_tool 修改后需重新签名）
+find "$FRAMEWORKS" \( -name "*.dylib" -o -name "*.so" \) \
+    -exec codesign --force --sign - {} \; 2>/dev/null || true
+# 签 ffmpeg 可执行文件
+[ -f "$MACOS/ffmpeg" ] && codesign --force --sign - "$MACOS/ffmpeg" 2>/dev/null || true
+# 最后签整个 .app
 codesign --force --deep --sign - "$APPDIR"
 
+# ── 完成 ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "✅  ${APPDIR} 已就绪"
+echo "✅  ${APPDIR} 已就绪（内含 libmpv + ffmpeg，即开即用）"
 [ -n "$APPLE_ID" ] && echo "   🔒  已绑定 Apple ID：${APPLE_ID}"
 echo ""
 echo "   立即打开：    open '${APPDIR}'"

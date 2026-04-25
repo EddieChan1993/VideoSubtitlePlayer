@@ -98,9 +98,16 @@ enum SubtitleExtractor {
 
     // MARK: - FFmpeg
 
-    static let ffmpegPath: String? =
-        ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
-            .first { FileManager.default.fileExists(atPath: $0) }
+    static let ffmpegPath: String? = {
+        let fm = FileManager.default
+        // 优先使用 Bundle 内打包的 ffmpeg（发布包无需 Homebrew）
+        if let bundled = Bundle.main.executableURL?
+                .deletingLastPathComponent()
+                .appendingPathComponent("ffmpeg").path,
+           fm.fileExists(atPath: bundled) { return bundled }
+        return ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
+            .first { fm.fileExists(atPath: $0) }
+    }()
 
     private static func extractWithFFmpeg(from url: URL, subtitleIndex: Int) async -> [Subtitle]? {
         guard let ffmpeg = ffmpegPath else { return nil }
