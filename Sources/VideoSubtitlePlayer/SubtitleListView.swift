@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SubtitleListView: View {
     @ObservedObject var vm: PlayerViewModel
+    @Binding var showSidebar: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +33,18 @@ struct SubtitleListView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showSidebar = false }
+            } label: {
+                Image(systemName: "sidebar.trailing")
+                    .font(.system(size: 13))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("隐藏字幕列表")
+            .padding(.leading, 4)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

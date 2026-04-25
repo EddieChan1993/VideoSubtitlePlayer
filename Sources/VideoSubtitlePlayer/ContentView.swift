@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var vm = PlayerViewModel()
     @State private var dropTargeted = false
     @State private var keyMonitor: Any?
+    @State private var showSidebar = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,6 +28,21 @@ struct ContentView: View {
                 .help("打开视频文件 (⌘O)")
             }
         }
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Ignore if any modifier key held
+                guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+                // Ignore if a text field has focus
+                if let r = NSApp.keyWindow?.firstResponder, r is NSTextView { return event }
+                switch event.keyCode {
+                case 0:  vm.previousSubtitle();       return nil  // A
+                case 1:  vm.restartCurrentSubtitle(); return nil  // S
+                case 2:  vm.nextSubtitle();           return nil  // D
+                case 49: vm.togglePlayPause();        return nil  // Space
+                default: return event
+                }
+            }
+        }
     }
 
     private var playerLayout: some View {
@@ -46,27 +62,14 @@ struct ContentView: View {
                 }
                 .frame(minWidth: 420, minHeight: 280)
 
-                SubtitleListView(vm: vm)
-                    .frame(minWidth: 240, maxWidth: 380)
+                if showSidebar {
+                    SubtitleListView(vm: vm, showSidebar: $showSidebar)
+                        .frame(minWidth: 240, maxWidth: 380)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            NavigationBarView(vm: vm)
-        }
-        .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
-                switch event.charactersIgnoringModifiers?.lowercased() {
-                case "a": vm.previousSubtitle(); return nil
-                case "s": vm.restartCurrentSubtitle(); return nil
-                case "d": vm.nextSubtitle(); return nil
-                case " ": vm.togglePlayPause(); return nil
-                default: return event
-                }
-            }
-        }
-        .onDisappear {
-            if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+            NavigationBarView(vm: vm, showSidebar: $showSidebar)
         }
     }
 
@@ -168,6 +171,8 @@ struct DropZoneView: View {
 
 struct NavigationBarView: View {
     @ObservedObject var vm: PlayerViewModel
+    @Binding var showSidebar: Bool
+    @State private var copiedFlash = false
 
     private var current: Subtitle? {
         guard vm.currentSubtitleIndex >= 0, vm.currentSubtitleIndex < vm.subtitles.count else { return nil }
@@ -193,13 +198,19 @@ struct NavigationBarView: View {
 
                 subtitleLabel
 
-                Spacer(minLength: 8)
+                copyButton
+                    .padding(.horizontal, 6)
+
+                Spacer(minLength: 4)
 
                 volumeControl
                     .padding(.trailing, 8)
 
                 positionLabel
-                    .padding(.trailing, 12)
+                    .padding(.trailing, 8)
+
+                sidebarToggle
+                    .padding(.trailing, 8)
             }
             .frame(height: 44)
             .background(.background)
@@ -224,6 +235,26 @@ struct NavigationBarView: View {
             NavButton(icon: "forward.end.fill", label: "下一条字幕 (D)", action: vm.nextSubtitle,
                       enabled: vm.currentSubtitleIndex < vm.subtitles.count - 1 && !vm.subtitles.isEmpty)
         }
+    }
+
+    private var copyButton: some View {
+        Button {
+            guard let text = current?.cleanText, !text.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copiedFlash = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copiedFlash = false }
+        } label: {
+            Image(systemName: copiedFlash ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+                .foregroundStyle(copiedFlash ? Color.accentColor : (current != nil ? Color.primary : Color(.tertiaryLabelColor)))
+        }
+        .buttonStyle(.borderless)
+        .disabled(current == nil)
+        .help("复制当前字幕")
+        .animation(.easeInOut(duration: 0.15), value: copiedFlash)
     }
 
     private var volumeControl: some View {
@@ -263,6 +294,20 @@ struct NavigationBarView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var sidebarToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }
+        } label: {
+            Image(systemName: showSidebar ? "sidebar.trailing" : "sidebar.trailing")
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .foregroundStyle(showSidebar ? Color.primary : Color.accentColor)
+        }
+        .buttonStyle(.borderless)
+        .help(showSidebar ? "隐藏字幕列表" : "显示字幕列表")
     }
 }
 
