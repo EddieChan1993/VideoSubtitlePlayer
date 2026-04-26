@@ -239,7 +239,21 @@ class PlayerViewModel: ObservableObject {
 
         if needsLoad { await loadSubtitles(for: mode, url: url) }
 
-        // 延迟 2 秒再启动预缓存，避免与 MPV 初始解码争 CPU 导致启动卡顿
+        // 英文加载完后立即预缓存双语，无需等待
+        if tracksSnapshot.count >= 2 {
+            Task {
+                let biMode = bilingualMode(from: tracksSnapshot)
+                guard biMode != mode else { return }
+                let alreadyCached = await MainActor.run { self.subtitleCache[biMode] != nil }
+                guard !alreadyCached else { return }
+                if case .bilingual(let p, let s) = biMode {
+                    let subs = await SubtitleExtractor.extractBilingual(from: url, primary: p, secondary: s)
+                    await MainActor.run { self.subtitleCache[biMode] = subs }
+                }
+            }
+        }
+
+        // 延迟 2 秒再缓存其余单轨，避免与 MPV 初始解码争 CPU
         Task {
             try? await Task.sleep(for: .seconds(2))
             await preCacheOtherTracks(tracksSnapshot, url: url, skipMode: mode)
@@ -247,7 +261,6 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func preCacheOtherTracks(_ tracks: [SubtitleTrack], url: URL, skipMode: SubtitleMode) async {
-        // 预缓存所有单轨
         for track in tracks {
             let mode = SubtitleMode.single(track)
             let alreadyCached = await MainActor.run { self.subtitleCache[mode] != nil }
@@ -260,16 +273,6 @@ class PlayerViewModel: ObservableObject {
                 }
             }
         }
-        // 预缓存双语（与 selectBilingualTrack 逻辑一致，无论是否有语言标签）
-        guard tracks.count >= 2 else { return }
-        let biMode = bilingualMode(from: tracks)
-        let biCached = await MainActor.run { self.subtitleCache[biMode] != nil }
-        guard biMode != skipMode, !biCached else { return }
-        let subs: [Subtitle]
-        if case .bilingual(let p, let s) = biMode {
-            subs = await SubtitleExtractor.extractBilingual(from: url, primary: p, secondary: s)
-        } else { return }
-        await MainActor.run { self.subtitleCache[biMode] = subs }
     }
 
     /// 与 selectBilingualTrack 共用的双语 mode 构造逻辑
