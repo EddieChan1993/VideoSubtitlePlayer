@@ -271,6 +271,8 @@ class PlayerViewModel: ObservableObject {
 
     func selectMode(_ mode: SubtitleMode) {
         guard let url = videoURL else { return }
+        // 已经在加载同一 mode，忽略重复触发
+        if isLoadingSubtitles && selectedMode == mode { return }
         selectedMode = mode
 
         if let cached = subtitleCache[mode] {
@@ -319,8 +321,8 @@ class PlayerViewModel: ObservableObject {
                 subs = await SubtitleExtractor.extractBilingual(from: url, primary: primary, secondary: secondary)
             }
         }
-        subtitleCache[mode] = subs
         await MainActor.run {
+            self.subtitleCache[mode] = subs
             guard self.selectedMode == mode else { return }
             self.subtitles = subs
             let time = self.currentPlaybackTime
