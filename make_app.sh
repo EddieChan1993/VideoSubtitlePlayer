@@ -248,10 +248,31 @@ done
 # ── 清理暂存 ──────────────────────────────────────────────────────────────────
 rm -rf "$STAGING"
 
+# ── 为每个 .app 生成「首次打开.command」启动器 ────────────────────────────────
+for APPDIR in "${BUILT_APPS[@]}"; do
+    APPNAME="${APPDIR%.app}"
+    LAUNCHER="${APPNAME}-首次打开.command"
+    cat > "$LAUNCHER" << LAUNCHER_EOF
+#!/usr/bin/env bash
+# 双击此文件即可首次打开应用，之后直接双击 .app 即可
+cd "\$(dirname "\$0")"
+APP="${APPDIR}"
+xattr -rd com.apple.quarantine "\$APP" 2>/dev/null
+open "\$APP"
+# 关闭终端窗口
+osascript -e 'tell application "Terminal" to close front window' 2>/dev/null
+exit 0
+LAUNCHER_EOF
+    chmod +x "$LAUNCHER"
+done
+
 # ── 完成汇总 ──────────────────────────────────────────────────────────────────
 echo ""
 echo "✅  打包完成，共 ${#BUILT_APPS[@]} 个："
-for f in "${BUILT_APPS[@]}"; do echo "   • $f"; done
+for f in "${BUILT_APPS[@]}"; do
+    LAUNCHER="${f%.app}-首次打开.command"
+    echo "   • $f"
+    echo "     └ $LAUNCHER（发给对方，双击首次打开）"
+done
 echo ""
-echo "   首次打开（对方执行）："
-echo "   xattr -rd com.apple.quarantine <app名>.app"
+echo "   发送时将 .app 和对应的 -首次打开.command 一起打包发给对方。"
