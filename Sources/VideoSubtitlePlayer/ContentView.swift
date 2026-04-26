@@ -55,6 +55,9 @@ struct ContentView: View {
                 case 2:  vm.nextSubtitle();           return nil  // D
                 case 8:  vm.copyCurrentSubtitle();    return nil  // C
                 case 12: vm.showSubtitles.toggle();   return nil  // Q
+                case 6:  withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }; return nil  // Z
+                case 18: vm.selectFirstTrack();       return nil  // 1
+                case 19: vm.selectBilingualTrack();   return nil  // 2
                 case 49: vm.togglePlayPause();        return nil  // Space
                 default: return event
                 }
@@ -331,7 +334,7 @@ struct NavigationBarView: View {
 
                 // ── 侧边栏 ───────────────────────────────────
                 BarButton(icon: "sidebar.trailing",
-                          help: showSidebar ? "隐藏字幕列表" : "显示字幕列表",
+                          help: showSidebar ? "隐藏字幕列表 (Z)" : "显示字幕列表 (Z)",
                           tint: showSidebar ? nil : .accentColor,
                           action: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } })
                     .padding(.trailing, 6)

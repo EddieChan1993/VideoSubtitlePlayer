@@ -462,6 +462,24 @@ class PlayerViewModel: ObservableObject {
 
     // MARK: - Playback control
 
+    func selectFirstTrack() {
+        guard let primary = availableTracks.first else { return }
+        selectMode(.single(primary))
+    }
+
+    func selectBilingualTrack() {
+        guard availableTracks.count >= 2 else { return }
+        let cn = availableTracks.first { $0.isChinese }
+        let en = availableTracks.first { $0.isEnglish }
+        let (p, s): (SubtitleTrack, SubtitleTrack)
+        if let cn, let en { (p, s) = (cn, en) }
+        else {
+            let l0 = trackLabel(for: availableTracks[0])
+            (p, s) = (l0 == "中文") ? (availableTracks[0], availableTracks[1]) : (availableTracks[1], availableTracks[0])
+        }
+        selectMode(.bilingual(p, s))
+    }
+
     func copyCurrentSubtitle() {
         let idx = sidebarHighlightIndex >= 0 ? sidebarHighlightIndex : currentSubtitleIndex
         guard idx >= 0, idx < subtitles.count else { return }
