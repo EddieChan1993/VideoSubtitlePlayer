@@ -247,26 +247,42 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func preCacheOtherTracks(_ tracks: [SubtitleTrack], url: URL, skipMode: SubtitleMode) async {
+        // 预缓存所有单轨
         for track in tracks {
             let mode = SubtitleMode.single(track)
-            guard mode != skipMode, subtitleCache[mode] == nil else { continue }
+            let alreadyCached = await MainActor.run { self.subtitleCache[mode] != nil }
+            guard mode != skipMode, !alreadyCached else { continue }
             let subs = await SubtitleExtractor.extract(from: url, track: track)
-            subtitleCache[mode] = subs
-            // 检测语言并发布，触发 tab 标签刷新
-            if let label = SubtitleExtractor.languageLabel(from: subs) {
-                await MainActor.run { self.trackLabels[track.id] = label }
+            await MainActor.run {
+                self.subtitleCache[mode] = subs
+                if let label = SubtitleExtractor.languageLabel(from: subs) {
+                    self.trackLabels[track.id] = label
+                }
             }
         }
-        // 预缓存双语（仅有明确语言标签时）
-        let cn = tracks.filter { $0.isChinese }
-        let en = tracks.filter { $0.isEnglish }
-        for c in cn {
-            for e in en {
-                let mode = SubtitleMode.bilingual(c, e)
-                guard mode != skipMode, subtitleCache[mode] == nil else { continue }
-                subtitleCache[mode] = await SubtitleExtractor.extractBilingual(from: url, primary: c, secondary: e)
-            }
+        // 预缓存双语（与 selectBilingualTrack 逻辑一致，无论是否有语言标签）
+        guard tracks.count >= 2 else { return }
+        let biMode = bilingualMode(from: tracks)
+        let biCached = await MainActor.run { self.subtitleCache[biMode] != nil }
+        guard biMode != skipMode, !biCached else { return }
+        let subs: [Subtitle]
+        if case .bilingual(let p, let s) = biMode {
+            subs = await SubtitleExtractor.extractBilingual(from: url, primary: p, secondary: s)
+        } else { return }
+        await MainActor.run { self.subtitleCache[biMode] = subs }
+    }
+
+    /// 与 selectBilingualTrack 共用的双语 mode 构造逻辑
+    func bilingualMode(from tracks: [SubtitleTrack]) -> SubtitleMode {
+        let cn = tracks.first { $0.isChinese }
+        let en = tracks.first { $0.isEnglish }
+        let (p, s): (SubtitleTrack, SubtitleTrack)
+        if let cn, let en { (p, s) = (cn, en) }
+        else {
+            let l0 = trackLabel(for: tracks[0])
+            (p, s) = (l0 == "中文") ? (tracks[0], tracks[1]) : (tracks[1], tracks[0])
         }
+        return .bilingual(p, s)
     }
 
     func selectMode(_ mode: SubtitleMode) {
@@ -472,15 +488,7 @@ class PlayerViewModel: ObservableObject {
 
     func selectBilingualTrack() {
         guard availableTracks.count >= 2 else { return }
-        let cn = availableTracks.first { $0.isChinese }
-        let en = availableTracks.first { $0.isEnglish }
-        let (p, s): (SubtitleTrack, SubtitleTrack)
-        if let cn, let en { (p, s) = (cn, en) }
-        else {
-            let l0 = trackLabel(for: availableTracks[0])
-            (p, s) = (l0 == "中文") ? (availableTracks[0], availableTracks[1]) : (availableTracks[1], availableTracks[0])
-        }
-        selectMode(.bilingual(p, s))
+        selectMode(bilingualMode(from: availableTracks))
     }
 
     func copyCurrentSubtitle() {
