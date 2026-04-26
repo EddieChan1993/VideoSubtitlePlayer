@@ -53,6 +53,8 @@ struct ContentView: View {
                 case 0:  vm.previousSubtitle();       return nil  // A
                 case 1:  vm.restartCurrentSubtitle(); return nil  // S
                 case 2:  vm.nextSubtitle();           return nil  // D
+                case 8:  vm.copyCurrentSubtitle();    return nil  // C
+                case 12: vm.showSubtitles.toggle();   return nil  // Q
                 case 49: vm.togglePlayPause();        return nil  // Space
                 default: return event
                 }
@@ -274,7 +276,6 @@ struct DropZoneView: View {
 struct NavigationBarView: View {
     @ObservedObject var vm: PlayerViewModel
     @Binding var showSidebar: Bool
-    @State private var copiedFlash = false
 
     /// 底部栏锁定字幕：优先用侧边栏高亮（间隙时不清空），回退到当前播放
     private var locked: Subtitle? {
@@ -311,7 +312,7 @@ struct NavigationBarView: View {
 
                 // ── 字幕开关 ──────────────────────────────────
                 BarButton(icon: vm.showSubtitles ? "captions.bubble.fill" : "captions.bubble",
-                          help: vm.showSubtitles ? "隐藏字幕（练听力）" : "显示字幕",
+                          help: vm.showSubtitles ? "隐藏字幕（练听力）(Q)" : "显示字幕 (Q)",
                           tint: vm.showSubtitles ? nil : .secondary,
                           action: { vm.showSubtitles.toggle() })
 
@@ -368,17 +369,12 @@ struct NavigationBarView: View {
 
     private var copyButton: some View {
         BarButton(
-            icon: copiedFlash ? "checkmark" : "doc.on.doc",
-            help: "复制锁定字幕",
-            tint: copiedFlash ? .accentColor : nil,
+            icon: vm.subtitleCopied ? "checkmark" : "doc.on.doc",
+            help: "复制锁定字幕 (C)",
+            tint: vm.subtitleCopied ? .accentColor : nil,
             disabled: locked == nil || !vm.showSubtitles,
-            action: {
-            guard let text = locked?.cleanText, !text.isEmpty else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            copiedFlash = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copiedFlash = false }
-        })
+            action: vm.copyCurrentSubtitle
+        )
     }
 
     private var volumeControl: some View {

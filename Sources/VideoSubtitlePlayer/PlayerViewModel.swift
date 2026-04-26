@@ -22,6 +22,7 @@ class PlayerViewModel: ObservableObject {
     @Published var useMPV = false
     @Published var isPlaying = false
     @Published var showSubtitles = true
+    @Published var subtitleCopied = false
     @Published var currentTime: Double = 0
     @Published var videoDuration: Double = 0
     @Published var isScrubbing: Bool = false
@@ -460,6 +461,17 @@ class PlayerViewModel: ObservableObject {
     }
 
     // MARK: - Playback control
+
+    func copyCurrentSubtitle() {
+        let idx = sidebarHighlightIndex >= 0 ? sidebarHighlightIndex : currentSubtitleIndex
+        guard idx >= 0, idx < subtitles.count else { return }
+        let text = subtitles[idx].cleanText
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        subtitleCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.subtitleCopied = false }
+    }
 
     func togglePlayPause() {
         if useMPV {
