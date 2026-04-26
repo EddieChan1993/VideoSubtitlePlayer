@@ -22,6 +22,7 @@ class PlayerViewModel: ObservableObject {
     @Published var useMPV = false
     @Published var isPlaying = false
     @Published var showSubtitles = true
+    @Published var showSidebar = true
     @Published var subtitleCopied = false
     @Published var currentTime: Double = 0
     @Published var videoDuration: Double = 0

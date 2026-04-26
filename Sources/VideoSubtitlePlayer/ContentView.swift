@@ -7,7 +7,6 @@ struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
     @State private var dropTargeted = false
     @State private var keyMonitor: Any?
-    @State private var showSidebar = true
     @State private var isSeeking = false
     @State private var seekValue: Double = 0
 
@@ -55,7 +54,7 @@ struct ContentView: View {
                 case 2:  vm.nextSubtitle();           return nil  // D
                 case 8:  vm.copyCurrentSubtitle();    return nil  // C
                 case 12: vm.showSubtitles.toggle();   return nil  // Q
-                case 6:  withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }; return nil  // Z
+                case 6:  withAnimation(.easeInOut(duration: 0.2)) { vm.showSidebar.toggle() }; return nil  // Z
                 case 18: vm.selectFirstTrack();       return nil  // 1
                 case 19: vm.selectBilingualTrack();   return nil  // 2
                 case 49: vm.togglePlayPause();        return nil  // Space
@@ -87,14 +86,14 @@ struct ContentView: View {
                 }
                 .frame(minWidth: 420, minHeight: 280)
 
-                if showSidebar {
-                    SubtitleListView(vm: vm, showSidebar: $showSidebar)
+                if vm.showSidebar {
+                    SubtitleListView(vm: vm)
                         .frame(minWidth: 240, maxWidth: 380)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            NavigationBarView(vm: vm, showSidebar: $showSidebar)
+            NavigationBarView(vm: vm)
         }
     }
 
@@ -278,7 +277,6 @@ struct DropZoneView: View {
 
 struct NavigationBarView: View {
     @ObservedObject var vm: PlayerViewModel
-    @Binding var showSidebar: Bool
 
     /// 底部栏锁定字幕：优先用侧边栏高亮（间隙时不清空），回退到当前播放
     private var locked: Subtitle? {
@@ -334,9 +332,9 @@ struct NavigationBarView: View {
 
                 // ── 侧边栏 ───────────────────────────────────
                 BarButton(icon: "sidebar.trailing",
-                          help: showSidebar ? "隐藏字幕列表 (Z)" : "显示字幕列表 (Z)",
-                          tint: showSidebar ? nil : .accentColor,
-                          action: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } })
+                          help: vm.showSidebar ? "隐藏字幕列表 (Z)" : "显示字幕列表 (Z)",
+                          tint: vm.showSidebar ? nil : .accentColor,
+                          action: { withAnimation(.easeInOut(duration: 0.2)) { vm.showSidebar.toggle() } })
                     .padding(.trailing, 6)
             }
             .frame(height: 44)
