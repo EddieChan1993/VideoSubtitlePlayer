@@ -328,10 +328,7 @@ struct NavigationBarView: View {
                 volumeControl
                     .padding(.trailing, 8)
 
-                // ── 位置 / 侧边栏 ─────────────────────────────
-                positionLabel
-                    .padding(.trailing, 8)
-
+                // ── 侧边栏 ───────────────────────────────────
                 BarButton(icon: "sidebar.trailing",
                           help: showSidebar ? "隐藏字幕列表" : "显示字幕列表",
                           tint: showSidebar ? nil : .accentColor,
@@ -396,16 +393,6 @@ struct NavigationBarView: View {
         }
     }
 
-    private var positionLabel: some View {
-        Group {
-            if !vm.subtitles.isEmpty {
-                let pos = vm.currentSubtitleIndex >= 0 ? "\(vm.currentSubtitleIndex + 1)" : "—"
-                Text("\(pos) / \(vm.subtitles.count)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
 }
 
 // MARK: - BarButton  (unified icon button with hover + press feedback)

@@ -7,7 +7,6 @@ struct SubtitleListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !vm.availableTracks.isEmpty { trackPicker }
             Divider()
             content
         }
@@ -17,10 +16,26 @@ struct SubtitleListView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack {
-            Text("字幕")
-                .font(.subheadline.weight(.semibold))
+        HStack(spacing: 6) {
+            // 轨道 Chip（无轨道时显示"字幕"占位）
+            let options = buildOptions()
+            if options.isEmpty {
+                Text("字幕")
+                    .font(.subheadline.weight(.semibold))
+            } else {
+                ForEach(options, id: \.label) { option in
+                    TrackChip(
+                        label: option.label,
+                        isSelected: option.mode == vm.selectedMode
+                    ) {
+                        vm.selectMode(option.mode)
+                    }
+                    .fixedSize()
+                }
+            }
+
             Spacer()
+
             if vm.isLoadingSubtitles {
                 HStack(spacing: 5) {
                     ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
@@ -29,10 +44,13 @@ struct SubtitleListView: View {
                         .foregroundStyle(.secondary)
                 }
             } else if !vm.subtitles.isEmpty {
-                Text("\(vm.subtitles.count) 条")
-                    .font(.caption)
+                let pos = vm.sidebarHighlightIndex >= 0 ? "\(vm.sidebarHighlightIndex + 1)" : "—"
+                Text("\(pos) / \(vm.subtitles.count) 条")
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .fixedSize()
             }
+
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { showSidebar = false }
             } label: {
@@ -44,34 +62,10 @@ struct SubtitleListView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .help("隐藏字幕列表")
-            .padding(.leading, 4)
+            .padding(.leading, 2)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-    }
-
-    // MARK: - Track Picker
-
-    @ViewBuilder
-    private var trackPicker: some View {
-        let options = buildOptions()
-        if !options.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(options, id: \.label) { option in
-                        TrackChip(
-                            label: option.label,
-                            isSelected: option.mode == vm.selectedMode
-                        ) {
-                            vm.selectMode(option.mode)
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-            }
-            Divider()
-        }
+        .padding(.vertical, 8)
     }
 
     private struct TrackOption {
@@ -101,7 +95,6 @@ struct SubtitleListView: View {
             if let cn, let en { (biPrimary, biSecondary) = (cn, en) }
             else {
                 let l0 = vm.trackLabel(for: tracks[0])
-                let l1 = vm.trackLabel(for: tracks[1])
                 (biPrimary, biSecondary) = (l0 == "中文") ? (tracks[0], tracks[1]) : (tracks[1], tracks[0])
             }
             let biLabel = "双语"
