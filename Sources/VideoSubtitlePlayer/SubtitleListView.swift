@@ -22,7 +22,7 @@ struct SubtitleListView: View {
                 Text("字幕")
                     .font(.subheadline.weight(.semibold))
             } else {
-                ForEach(options, id: \.label) { option in
+                ForEach(Array(options.enumerated()), id: \.element.label) { idx, option in
                     TrackChip(
                         label: option.label,
                         isSelected: option.mode == vm.selectedMode
@@ -30,6 +30,7 @@ struct SubtitleListView: View {
                         vm.selectMode(option.mode)
                     }
                     .fixedSize()
+                    .help("\(option.label) (\(idx + 1))")
                 }
             }
 
