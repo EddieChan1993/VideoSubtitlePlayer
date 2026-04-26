@@ -414,8 +414,9 @@ class PlayerViewModel: ObservableObject {
         } else if currentSubtitleIndex == 0 {
             target = 0
         } else {
-            // 字幕间隙：找当前时间之前结束的最后一条字幕
-            target = subtitles.lastIndex { $0.endTime <= now } ?? 0
+            // 字幕间隙：sidebarHighlightIndex 指向刚结束的那条，上一条是它的前一条
+            let locked = sidebarHighlightIndex
+            target = locked > 0 ? locked - 1 : 0
         }
         jumpToSubtitle(subtitles[target])
     }
