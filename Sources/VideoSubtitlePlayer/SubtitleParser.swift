@@ -1,9 +1,17 @@
 import Foundation
+import CoreFoundation
 
 enum SubtitleParser {
 
+    // GBK/GB2312 encoding used by many older Chinese subtitle files
+    private static let gbkEncoding: String.Encoding = {
+        let cf = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632)) // kCFStringEncodingGBK_95
+        return String.Encoding(rawValue: cf)
+    }()
+
     static func parse(url: URL) -> [Subtitle] {
         guard let raw = (try? String(contentsOf: url, encoding: .utf8))
+                     ?? (try? String(contentsOf: url, encoding: gbkEncoding))
                      ?? (try? String(contentsOf: url, encoding: .isoLatin1)) else { return [] }
         switch url.pathExtension.lowercased() {
         case "srt":          return parseSRT(raw)
@@ -155,5 +163,7 @@ enum SubtitleParser {
     private static func normalize(_ raw: String) -> String {
         raw.replacingOccurrences(of: "\r\n", with: "\n")
            .replacingOccurrences(of: "\r", with: "\n")
+           // Some SRT files use "space-only" lines as block separators; treat them as blank lines
+           .replacingOccurrences(of: "(?m)^[ \t]+$", with: "", options: .regularExpression)
     }
 }

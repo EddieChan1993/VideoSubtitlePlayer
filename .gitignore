@@ -4,3 +4,8 @@
 *.swp
 .DS_Store
 VideoSubtitlePlayer.app
+SubMelon.app
+SubMelon-*.app
+*.command
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+.swiftpm/xcode/xcuserdata/

@@ -7,7 +7,7 @@ struct SubtitleTrack: Identifiable, Equatable, Hashable {
     let title: String?
 
     var displayName: String {
-        let lang = localizedLanguage ?? language?.uppercased() ?? "Track \(index + 1)"
+        let lang = localizedLanguage ?? language?.uppercased() ?? "轨道 \(index + 1)"
         if let t = title, !t.isEmpty { return "\(lang) · \(t)" }
         return lang
     }

@@ -233,13 +233,21 @@ enum SubtitleExtractor {
     /// Detects display label from subtitle content (used when ffmpeg reports no language tag).
     /// Returns "英文", "中文", or nil when undetermined.
     static func languageLabel(from subtitles: [Subtitle]) -> String? {
-        let text = subtitles.prefix(15).map { $0.cleanText }.joined()
-        guard !text.isEmpty else { return nil }
-        let cjk = text.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
-        let lat = text.unicodeScalars.filter {
-            ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122)
-        }.count
-        guard lat + cjk > 0 else { return nil }
+        let sample = Array(subtitles.prefix(15))
+        guard !sample.isEmpty else { return nil }
+
+        func hasCJK(_ s: String) -> Bool { s.unicodeScalars.contains { $0.value >= 0x4E00 && $0.value <= 0x9FFF } }
+        func hasLat(_ s: String) -> Bool { s.unicodeScalars.contains { ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122) } }
+
+        // If 2+ individual entries each contain both scripts, the track is bilingual
+        let mixed = sample.filter { let t = $0.cleanText; return hasCJK(t) && hasLat(t) }
+        if mixed.count >= 2 { return "双语" }
+
+        let allText = sample.map { $0.cleanText }.joined()
+        guard !allText.isEmpty else { return nil }
+        let cjk = allText.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        let lat = allText.unicodeScalars.filter { ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122) }.count
+        guard cjk + lat > 0 else { return nil }
         return cjk > lat ? "中文" : "英文"
     }
 

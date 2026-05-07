@@ -29,6 +29,8 @@ class PlayerViewModel: ObservableObject {
     @Published var isScrubbing: Bool = false
     /// track.id → 检测到的语言标签，异步更新后触发 tab 刷新
     @Published var trackLabels: [Int: String] = [:]
+    /// 用户拖拽排序后的 chip 顺序（stableId 列表），同步给 orderedModes 让快捷键跟随
+    @Published var chipOrder: [String] = []
     /// 当前播放视频的文件名（无扩展名）
     @Published var videoTitle: String = ""
     /// 递增以强制侧边栏滚动到当前字幕（即使 sidebarHighlightIndex 未变化）
@@ -39,7 +41,7 @@ class PlayerViewModel: ObservableObject {
             else { player.volume = Float(volume / 100.0) }
         }
     }
-    private(set) var mpvController: MPVController?
+    @Published private(set) var mpvController: MPVController?
 
     private(set) var videoURL: URL?
     private var fragStreamer: FragStreamer?
@@ -48,6 +50,8 @@ class PlayerViewModel: ObservableObject {
     private var statusObserver: NSKeyValueObservation?
 
     private var subtitleCache: [SubtitleMode: [Subtitle]] = [:]
+    private var externalTrackURLs: [Int: URL] = [:]
+    private var nextExternalTrackId = -100
 
     init() {
         let interval = CMTime(seconds: 0.08, preferredTimescale: 600)
@@ -86,6 +90,7 @@ class PlayerViewModel: ObservableObject {
 
         videoURL = url
         videoTitle = url.deletingPathExtension().lastPathComponent
+        VideoHistory.shared.record(videoURL: url)
         subtitles = []
         availableTracks = []
         selectedMode = nil
@@ -103,6 +108,15 @@ class PlayerViewModel: ObservableObject {
         trackLabels = [:]
         subtitleCache = [:]
         isScrubbing = false
+        externalTrackURLs = [:]
+        nextExternalTrackId = -100
+        chipOrder = []
+
+        // 后台预生成缩略图，供历史记录弹窗使用（优先级低，不抢 MPV 初始解码）
+        let thumbPath = url.path
+        Task.detached(priority: .background) {
+            await loadVideoThumbnail(path: thumbPath)
+        }
 
         // 延迟 1.5 秒再启动 FFmpeg 字幕提取，让 MPV 先完成初始解码不争 CPU
         Task {
@@ -208,6 +222,7 @@ class PlayerViewModel: ObservableObject {
                 self.isLoadingSubtitles = false
                 self.loadingStatus = "已加载 \(immediateSubs.count) 条字幕"
             }
+            self.syncChipOrder()
         }
 
         let labeledTracks = await SubtitleExtractor.listTracksWithLabels(from: url)
@@ -228,6 +243,7 @@ class PlayerViewModel: ObservableObject {
 
         let needsLoad = await MainActor.run { () -> Bool in
             self.availableTracks = tracksSnapshot
+            self.syncChipOrder()
             let changed = self.subtitles.isEmpty || self.selectedMode != mode
             self.selectedMode = mode
             if changed {
@@ -328,9 +344,13 @@ class PlayerViewModel: ObservableObject {
         let subs: [Subtitle]
         switch mode {
         case .single(let track):
-            subs = track.id < 0
-                ? SubtitleExtractor.extractCompanion(for: url, track: track)
-                : await SubtitleExtractor.extract(from: url, track: track)
+            if track.id <= -100 {
+                subs = externalTrackURLs[track.id].map { SubtitleParser.parse(url: $0) } ?? []
+            } else if track.id < 0 {
+                subs = SubtitleExtractor.extractCompanion(for: url, track: track)
+            } else {
+                subs = await SubtitleExtractor.extract(from: url, track: track)
+            }
         case .bilingual(let primary, let secondary):
             if primary.id < 0 || secondary.id < 0 {
                 let a = SubtitleExtractor.extractCompanion(for: url, track: primary)
@@ -479,20 +499,62 @@ class PlayerViewModel: ObservableObject {
         if let lang = track.language, !lang.isEmpty { return lang.uppercased() }
         // 用异步检测结果（@Published），稳定更新不引起 tab 数量变化
         if let detected = trackLabels[track.id] { return detected }
+        if track.id <= -100 { return "外挂字幕" }
         return "轨道 \(track.index + 1)"
     }
 
     // MARK: - Playback control
 
-    func selectFirstTrack() {
-        guard let primary = availableTracks.first else { return }
-        selectMode(.single(primary))
+    func modeStableId(_ mode: SubtitleMode) -> String {
+        switch mode {
+        case .single(let t):           return "s\(t.id)"
+        case .bilingual(let p, let s): return "b\(p.id)_\(s.id)"
+        }
     }
 
-    func selectBilingualTrack() {
-        guard availableTracks.count >= 2 else { return }
-        selectMode(bilingualMode(from: availableTracks))
+    /// Raw order derived from availableTracks (builtin first, then external).
+    private func buildRawModes() -> [SubtitleMode] {
+        let tracks = availableTracks
+        guard !tracks.isEmpty else { return [] }
+        var modes: [SubtitleMode] = []
+        let builtin = tracks.filter { $0.id > -100 }
+        if let primary = builtin.first {
+            modes.append(.single(primary))
+            if builtin.count >= 2 { modes.append(bilingualMode(from: builtin)) }
+        }
+        for track in tracks where track.id <= -100 { modes.append(.single(track)) }
+        return modes
     }
+
+    /// Keeps chipOrder in sync with availableTracks (preserves user drag order, appends new, removes deleted).
+    func syncChipOrder() {
+        let freshIds = buildRawModes().map { modeStableId($0) }
+        let freshSet = Set(freshIds)
+        var order = chipOrder.filter { freshSet.contains($0) }
+        let existing = Set(order)
+        order += freshIds.filter { !existing.contains($0) }
+        chipOrder = order
+    }
+
+    /// Chip order respecting user drag; falls back to track insertion order.
+    var orderedModes: [SubtitleMode] {
+        let allModes = buildRawModes()
+        guard !chipOrder.isEmpty else { return allModes }
+        let byId = Dictionary(uniqueKeysWithValues: allModes.map { (modeStableId($0), $0) })
+        var result = chipOrder.compactMap { byId[$0] }
+        let known = Set(chipOrder)
+        result += allModes.filter { !known.contains(modeStableId($0)) }
+        return result
+    }
+
+    func selectTrackOption(at index: Int) {
+        let modes = orderedModes
+        guard index < modes.count else { return }
+        selectMode(modes[index])
+    }
+
+    func selectFirstTrack() { selectTrackOption(at: 0) }
+    func selectBilingualTrack() { selectTrackOption(at: 1) }
 
     func copyCurrentSubtitle() {
         let idx = sidebarHighlightIndex >= 0 ? sidebarHighlightIndex : currentSubtitleIndex
@@ -529,6 +591,91 @@ class PlayerViewModel: ObservableObject {
             player.pause()
         }
         isPlaying = false
+    }
+
+    // MARK: - External subtitle loading
+
+    func openExternalSubtitleFile() {
+        guard isVideoLoaded else { return }
+        let panel = NSOpenPanel()
+        panel.title = "加载字幕文件"
+        panel.message = "选择外挂字幕文件（SRT / VTT / ASS / SSA）"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = []
+        panel.allowsOtherFileTypes = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadExternalSubtitle(from: url, autoSelect: true)
+    }
+
+    func loadExternalSubtitle(from url: URL, autoSelect: Bool) {
+        let ext = url.pathExtension.lowercased()
+        guard ["srt", "vtt", "webvtt", "ass", "ssa"].contains(ext) else { return }
+        let subs = SubtitleParser.parse(url: url)
+        guard !subs.isEmpty else { return }
+
+        let trackId = nextExternalTrackId
+        nextExternalTrackId -= 1
+        let track = SubtitleTrack(id: trackId, index: 0, language: nil,
+                                  title: url.deletingPathExtension().lastPathComponent)
+        let mode = SubtitleMode.single(track)
+
+        externalTrackURLs[trackId] = url
+        subtitleCache[mode] = subs
+
+        if let label = SubtitleExtractor.languageLabel(from: subs) {
+            trackLabels[trackId] = label
+        }
+
+        availableTracks.append(track)
+        syncChipOrder()
+        if autoSelect { selectMode(mode) }
+
+        if let videoURL { VideoHistory.shared.addSubtitle(url, forVideo: videoURL) }
+    }
+
+    func loadVideoFromHistory(_ entry: HistoryEntry) {
+        guard let url = URL(string: "file://" + entry.videoPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!) else { return }
+        loadVideo(url: url)
+        let paths = entry.externalSubtitlePaths
+        guard !paths.isEmpty else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(2500))
+            for path in paths {
+                let subURL = URL(fileURLWithPath: path)
+                guard FileManager.default.fileExists(atPath: path) else { continue }
+                loadExternalSubtitle(from: subURL, autoSelect: false)
+            }
+            // If nothing is showing yet (video has no embedded subs), select the first loaded external track
+            if subtitles.isEmpty, let extTrack = availableTracks.first(where: { $0.id <= -100 }) {
+                selectMode(.single(extTrack))
+            }
+        }
+    }
+
+    func removeExternalTrack(_ track: SubtitleTrack) {
+        guard track.id <= -100 else { return }
+        if let url = externalTrackURLs[track.id], let videoURL {
+            VideoHistory.shared.removeSubtitle(url.path, forVideo: videoURL)
+        }
+        externalTrackURLs.removeValue(forKey: track.id)
+        trackLabels.removeValue(forKey: track.id)
+        subtitleCache.removeValue(forKey: .single(track))
+        availableTracks.removeAll { $0.id == track.id }
+        syncChipOrder()
+
+        if case .single(let selected) = selectedMode, selected.id == track.id {
+            if let first = availableTracks.first {
+                selectMode(.single(first))
+            } else {
+                selectedMode = nil
+                subtitles = []
+                currentSubtitleIndex = -1
+                sidebarHighlightIndex = -1
+                isLoadingSubtitles = false
+                loadingStatus = "未找到字幕轨道"
+            }
+        }
     }
 
     // MARK: - Export

@@ -48,6 +48,14 @@ final class MPVHostView: NSView {
         scheduleRender()
     }
 
+    /// 切换视频时 SwiftUI 不一定重建 NSView，只调用 updateNSView；
+    /// 此方法负责把新的 controller 接进来并重新挂载 onNeedsDisplay。
+    func reconnect(to newController: MPVController) {
+        mpvController = newController
+        newController.onNeedsDisplay = { [weak self] in self?.scheduleRender() }
+        scheduleRender()
+    }
+
     // SwiftUI 通过 setFrameSize 设置尺寸，不触发 layout()
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -112,5 +120,9 @@ struct MPVPlayerView: NSViewRepresentable {
         MPVHostView(controller: controller)
     }
 
-    func updateNSView(_ nsView: MPVHostView, context: Context) {}
+    func updateNSView(_ nsView: MPVHostView, context: Context) {
+        // controller 对象换了（新视频）但 SwiftUI 未重建 NSView，需手动重接
+        guard nsView.mpvController !== controller else { return }
+        nsView.reconnect(to: controller)
+    }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SubtitleListView: View {
     @ObservedObject var vm: PlayerViewModel
+    @State private var draggedChipId: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,27 +16,48 @@ struct SubtitleListView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 6) {
-            // 轨道 Chip（无轨道时显示"字幕"占位）
-            let options = buildOptions()
-            if options.isEmpty {
-                Text("字幕")
-                    .font(.subheadline.weight(.semibold))
-            } else {
-                ForEach(Array(options.enumerated()), id: \.element.label) { idx, option in
-                    TrackChip(
-                        label: option.label,
-                        isSelected: option.mode == vm.selectedMode
-                    ) {
-                        vm.selectMode(option.mode)
+        HStack(spacing: 4) {
+            // 轨道 Chip 横向滚动区，支持拖拽排序
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    let options = orderedOptions
+                    if options.isEmpty {
+                        Text("字幕")
+                            .font(.subheadline.weight(.semibold))
+                    } else {
+                        ForEach(Array(options.enumerated()), id: \.element.stableId) { idx, option in
+                            TrackChip(
+                                label: option.label,
+                                isSelected: option.mode == vm.selectedMode,
+                                action: { vm.selectMode(option.mode) },
+                                onRemove: option.removeTrack.map { track in { vm.removeExternalTrack(track) } }
+                            )
+                            .fixedSize()
+                            .help("\(option.label) (\(idx + 1))")
+                            .opacity(draggedChipId == option.stableId ? 0.4 : 1.0)
+                            .onDrag {
+                                draggedChipId = option.stableId
+                                return NSItemProvider(object: option.stableId as NSString)
+                            }
+                            .onDrop(of: [.text], delegate: ChipDropDelegate(
+                                targetId: option.stableId,
+                                order: Binding(get: { self.vm.chipOrder },
+                                               set: { self.vm.chipOrder = $0 }),
+                                draggedId: $draggedChipId
+                            ))
+                        }
                     }
-                    .fixedSize()
-                    .help("\(option.label) (\(idx + 1))")
+                    if vm.isVideoLoaded {
+                        HoverIconButton(systemName: "plus.circle", help: "加载外挂字幕文件（SRT / VTT / ASS）") {
+                            vm.openExternalSubtitleFile()
+                        }
+                    }
                 }
+                .padding(.horizontal, 12)
+                .animation(.easeInOut(duration: 0.2), value: vm.chipOrder)
             }
 
-            Spacer()
-
+            // 右侧固定区：进度 / 计数 + 折叠按钮
             if vm.isLoadingSubtitles {
                 HStack(spacing: 5) {
                     ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
@@ -51,55 +73,84 @@ struct SubtitleListView: View {
                     .fixedSize()
             }
 
-            Button {
+            HoverIconButton(systemName: "sidebar.trailing", help: "隐藏字幕列表") {
                 withAnimation(.easeInOut(duration: 0.2)) { vm.showSidebar = false }
-            } label: {
-                Image(systemName: "sidebar.trailing")
-                    .font(.system(size: 13))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("隐藏字幕列表")
+            .padding(.trailing, 12)
             .padding(.leading, 2)
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    // Chips ordered by user's drag preference (vm.chipOrder); new tracks appended at end
+    private var orderedOptions: [TrackOption] {
+        let fresh = buildOptions()
+        guard !vm.chipOrder.isEmpty else { return fresh }
+        let byId = Dictionary(uniqueKeysWithValues: fresh.map { ($0.stableId, $0) })
+        var result = vm.chipOrder.compactMap { byId[$0] }
+        let known = Set(vm.chipOrder)
+        result += fresh.filter { !known.contains($0.stableId) }
+        return result
+    }
+
+    private struct ChipDropDelegate: DropDelegate {
+        let targetId: String
+        @Binding var order: [String]
+        @Binding var draggedId: String?
+
+        func dropEntered(info: DropInfo) {
+            guard let from = draggedId, from != targetId,
+                  let fi = order.firstIndex(of: from),
+                  let ti = order.firstIndex(of: targetId) else { return }
+            withAnimation(.easeInOut(duration: 0.18)) {
+                order.move(fromOffsets: IndexSet(integer: fi), toOffset: ti > fi ? ti + 1 : ti)
+            }
+        }
+        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+        func performDrop(info: DropInfo) -> Bool { draggedId = nil; return true }
     }
 
     private struct TrackOption {
         let label: String
         let mode: SubtitleMode
+        var removeTrack: SubtitleTrack? = nil
+
+        // Stable key derived from track IDs, not from the label which can change asynchronously
+        var stableId: String {
+            switch mode {
+            case .single(let t):          return "s\(t.id)"
+            case .bilingual(let p, let s): return "b\(p.id)_\(s.id)"
+            }
+        }
     }
 
     private func buildOptions() -> [TrackOption] {
         let tracks = vm.availableTracks
         guard !tracks.isEmpty else { return [] }
 
-        // 结构固定：单轨选项 + 双语（如有第二轨）
-        // 不做去重，不依赖内容检测时机，保证 tab 数量稳定不跳变
         var options: [TrackOption] = []
 
-        // 单轨：只展示第一条（主字幕）
-        let primary = tracks[0]
-        options.append(TrackOption(label: vm.trackLabel(for: primary), mode: .single(primary)))
+        // 内嵌 + 伴随轨道（id > -100）
+        let builtinTracks = tracks.filter { $0.id > -100 }
+        if let primary = builtinTracks.first {
+            options.append(TrackOption(label: vm.trackLabel(for: primary), mode: .single(primary)))
 
-        // 双语：有第二条轨道时始终提供
-        if tracks.count >= 2 {
-            let secondary = tracks[1]
-            // 中文在上、英文在下；无法判断时 tracks[0] 为主
-            let cn = tracks.first { $0.isChinese }
-            let en = tracks.first { $0.isEnglish }
-            let (biPrimary, biSecondary): (SubtitleTrack, SubtitleTrack)
-            if let cn, let en { (biPrimary, biSecondary) = (cn, en) }
-            else {
-                let l0 = vm.trackLabel(for: tracks[0])
-                (biPrimary, biSecondary) = (l0 == "中文") ? (tracks[0], tracks[1]) : (tracks[1], tracks[0])
+            if builtinTracks.count >= 2 {
+                let cn = builtinTracks.first { $0.isChinese }
+                let en = builtinTracks.first { $0.isEnglish }
+                let (biPrimary, biSecondary): (SubtitleTrack, SubtitleTrack)
+                if let cn, let en { (biPrimary, biSecondary) = (cn, en) }
+                else {
+                    let l0 = vm.trackLabel(for: builtinTracks[0])
+                    (biPrimary, biSecondary) = (l0 == "中文") ? (builtinTracks[0], builtinTracks[1]) : (builtinTracks[1], builtinTracks[0])
+                }
+                options.append(TrackOption(label: "双语", mode: .bilingual(biPrimary, biSecondary)))
             }
-            let biLabel = "双语"
-            options.append(TrackOption(label: biLabel, mode: .bilingual(biPrimary, biSecondary)))
-            _ = secondary // suppress warning
+        }
+
+        // 手动加载的外挂字幕（id <= -100），每个单独一个 chip，带删除按钮
+        for track in tracks where track.id <= -100 {
+            options.append(TrackOption(label: vm.trackLabel(for: track), mode: .single(track), removeTrack: track))
         }
 
         return options
@@ -121,7 +172,15 @@ struct SubtitleListView: View {
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
-                .onChange(of: vm.sidebarHighlightIndex) { idx in
+                .onAppear {
+                    let idx = vm.sidebarHighlightIndex
+                    guard idx >= 0, idx < vm.subtitles.count else { return }
+                    // Defer until List has finished layout; immediate scroll lands at wrong offset
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        proxy.scrollTo(idx, anchor: .center)
+                    }
+                }
+                .onChange(of: vm.sidebarHighlightIndex) { _, idx in
                     guard idx >= 0, idx < vm.subtitles.count else { return }
                     if vm.isScrubbing {
                         proxy.scrollTo(idx, anchor: .center)
@@ -131,7 +190,7 @@ struct SubtitleListView: View {
                         }
                     }
                 }
-                .onChange(of: vm.sidebarScrollTrigger) { _ in
+                .onChange(of: vm.sidebarScrollTrigger) { _, _ in
                     let idx = vm.sidebarHighlightIndex
                     guard idx >= 0, idx < vm.subtitles.count else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
@@ -155,6 +214,14 @@ struct SubtitleListView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
+                if vm.isVideoLoaded {
+                    Button("加载字幕文件…") {
+                        vm.openExternalSubtitleFile()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -168,20 +235,71 @@ struct TrackChip: View {
     let label: String
     let isSelected: Bool
     let action: () -> Void
+    var onRemove: (() -> Void)? = nil
+
+    @State private var xHovering = false
 
     var body: some View {
-        Button(action: action) {
+        HStack(spacing: 4) {
             Text(label)
                 .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? Color.accentColor : Color(.controlBackgroundColor))
-                )
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
+            if let onRemove {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(isSelected
+                        ? (xHovering ? Color.white : Color.white.opacity(0.65))
+                        : (xHovering ? Color.primary : Color.secondary))
+                    .padding(3)
+                    .background(
+                        Circle().fill(xHovering
+                            ? (isSelected ? Color.white.opacity(0.25) : Color(.controlColor))
+                            : Color.clear)
+                    )
+                    .contentShape(Circle().inset(by: -2))
+                    .onHover { h in
+                        xHovering = h
+                        if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
+                    .onTapGesture { onRemove() }
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, onRemove != nil ? 8 : 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(isSelected ? Color.accentColor : Color(.controlBackgroundColor)))
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .contentShape(Capsule())
+        .onTapGesture { action() }
+        .onHover { h in
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+}
+
+// MARK: - HoverIconButton
+
+struct HoverIconButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 13))
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(hovering ? Color(.controlColor) : Color.clear)
+            )
+            .foregroundStyle(hovering ? Color.primary : Color.secondary)
+            .contentShape(Rectangle())
+            .onHover { h in
+                hovering = h
+                if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .onTapGesture { action() }
+            .help(help)
     }
 }
 

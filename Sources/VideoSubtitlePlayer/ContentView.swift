@@ -9,6 +9,20 @@ struct ContentView: View {
     @State private var keyMonitor: Any?
     @State private var isSeeking = false
     @State private var seekValue: Double = 0
+    @AppStorage("sidebarWidth") private var sidebarWidth: Double = 280
+    @AppStorage("sub.fontSize")    private var subFontSize: Double = 18
+    @AppStorage("sub.secFontSize") private var subSecFontSize: Double = 15
+    @AppStorage("sub.bgOpacity")   private var subBgOpacity: Double = 0.55
+    @AppStorage("sub.bottomPad")   private var subBottomPad: Double = 18
+    @AppStorage("sub.cr")  private var subCR:  Double = 1
+    @AppStorage("sub.cg")  private var subCG:  Double = 1
+    @AppStorage("sub.cb")  private var subCB:  Double = 1
+    @AppStorage("sub.scr") private var subSCR: Double = 1
+    @AppStorage("sub.scg") private var subSCG: Double = 0.93
+    @AppStorage("sub.scb") private var subSCB: Double = 0    // default secondary: yellow
+    private var subColor:    Color { Color(red: subCR,  green: subCG,  blue: subCB)  }
+    private var subSecColor: Color { Color(red: subSCR, green: subSCG, blue: subSCB) }
+    @State private var showHistory = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +43,20 @@ struct ContentView: View {
                     Label("打开视频", systemImage: "folder")
                 }
                 .help("打开视频文件 (⌘O)")
+            }
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    showHistory.toggle()
+                } label: {
+                    Label("最近播放", systemImage: "clock")
+                }
+                .help("最近播放记录")
+                .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                    HistoryPopoverView(history: VideoHistory.shared) { entry in
+                        vm.loadVideoFromHistory(entry)
+                        showHistory = false
+                    }
+                }
             }
             ToolbarItem(placement: .primaryAction) {
                 if vm.isVideoLoaded {
@@ -55,8 +83,11 @@ struct ContentView: View {
                 case 8:  vm.copyCurrentSubtitle();    return nil  // C
                 case 12: vm.showSubtitles.toggle();   return nil  // Q
                 case 6:  withAnimation(.easeInOut(duration: 0.2)) { vm.showSidebar.toggle() }; return nil  // Z
-                case 18: vm.selectFirstTrack();       return nil  // 1
-                case 19: vm.selectBilingualTrack();   return nil  // 2
+                case 18: vm.selectTrackOption(at: 0); return nil  // 1
+                case 19: vm.selectTrackOption(at: 1); return nil  // 2
+                case 20: vm.selectTrackOption(at: 2); return nil  // 3
+                case 21: vm.selectTrackOption(at: 3); return nil  // 4
+                case 23: vm.selectTrackOption(at: 4); return nil  // 5
                 case 49: vm.togglePlayPause();        return nil  // Space
                 default: return event
                 }
@@ -69,7 +100,7 @@ struct ContentView: View {
 
     private var playerLayout: some View {
         VStack(spacing: 0) {
-            HSplitView {
+            HStack(spacing: 0) {
                 ZStack {
                     if vm.useMPV, let mpv = vm.mpvController {
                         MPVPlayerView(controller: mpv)
@@ -81,14 +112,17 @@ struct ContentView: View {
                     } else if let err = vm.videoError {
                         videoErrorOverlay(err)
                     }
-                    // seekBarOverlay 内部已包含字幕浮层，无需单独渲染 videoSubtitleOverlay
                     seekBarOverlay
                 }
                 .frame(minWidth: 420, minHeight: 280)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 if vm.showSidebar {
+                    SidebarResizeHandle(sidebarWidth: $sidebarWidth, minWidth: 240, maxWidth: 480)
+                        .frame(width: 8)
                     SubtitleListView(vm: vm)
-                        .frame(minWidth: 240, maxWidth: 380)
+                        .frame(width: CGFloat(sidebarWidth))
+                        .clipped()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -161,23 +195,28 @@ struct ContentView: View {
         if vm.showSubtitles,
            vm.currentSubtitleIndex >= 0,
            vm.currentSubtitleIndex < vm.subtitles.count {
-            let text = vm.subtitles[vm.currentSubtitleIndex].cleanText
-            if !text.isEmpty {
+            let lines = vm.subtitles[vm.currentSubtitleIndex].bilingualLines
+            if !lines.isEmpty {
                 VStack {
                     Spacer()
-                    Text(text)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .shadow(color: .black, radius: 1, x: 1, y: 1)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.black.opacity(0.55))
-                        )
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 18)
+                    VStack(spacing: 3) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
+                            Text(line)
+                                .font(.system(size: idx == 0 ? subFontSize : subSecFontSize,
+                                              weight: .semibold))
+                                .foregroundStyle(idx == 0 ? subColor : subSecColor)
+                                .multilineTextAlignment(.center)
+                                .shadow(color: .black, radius: 1, x: 1, y: 1)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.black.opacity(subBgOpacity))
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, subBottomPad)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -277,6 +316,7 @@ struct DropZoneView: View {
 
 struct NavigationBarView: View {
     @ObservedObject var vm: PlayerViewModel
+    @State private var showSubSettings = false
 
     /// 底部栏锁定字幕：优先用侧边栏高亮（间隙时不清空），回退到当前播放
     private var locked: Subtitle? {
@@ -311,11 +351,17 @@ struct NavigationBarView: View {
 
                 barDivider
 
-                // ── 字幕开关 ──────────────────────────────────
+                // ── 字幕开关 + 样式 ───────────────────────────
                 BarButton(icon: vm.showSubtitles ? "captions.bubble.fill" : "captions.bubble",
                           help: vm.showSubtitles ? "隐藏字幕（练听力）(Q)" : "显示字幕 (Q)",
                           tint: vm.showSubtitles ? nil : .secondary,
                           action: { vm.showSubtitles.toggle() })
+                BarButton(icon: "textformat.size", help: "字幕样式设置") {
+                    showSubSettings.toggle()
+                }
+                .popover(isPresented: $showSubSettings, arrowEdge: .top) {
+                    SubtitleSettingsView()
+                }
 
                 barDivider
 
@@ -442,3 +488,314 @@ struct PressScaleStyle: ButtonStyle {
 
 // NavButton kept for any legacy call sites
 typealias NavButton = BarButton
+
+// MARK: - Subtitle appearance settings popover
+
+struct SubtitleSettingsView: View {
+    @AppStorage("sub.fontSize")    private var fontSize: Double = 18
+    @AppStorage("sub.secFontSize") private var secFontSize: Double = 15
+    @AppStorage("sub.bgOpacity")   private var bgOpacity: Double = 0.55
+    @AppStorage("sub.bottomPad")   private var bottomPad: Double = 18
+    @AppStorage("sub.cr")  private var cr:  Double = 1
+    @AppStorage("sub.cg")  private var cg:  Double = 1
+    @AppStorage("sub.cb")  private var cb:  Double = 1
+    @AppStorage("sub.scr") private var scr: Double = 1
+    @AppStorage("sub.scg") private var scg: Double = 0.93
+    @AppStorage("sub.scb") private var scb: Double = 0
+
+    // Classic bilingual color presets: (label, primary, secondary)
+    private let presets: [(String, (Double,Double,Double), (Double,Double,Double))] = [
+        ("白 / 黄", (1,1,1), (1,0.93,0)),
+        ("白 / 白", (1,1,1), (1,1,1)),
+        ("黄 / 白", (1,0.93,0), (1,1,1)),
+    ]
+
+    private var primaryColor: Binding<Color> { colorBinding(r: $cr, g: $cg, b: $cb) }
+    private var secondaryColor: Binding<Color> { colorBinding(r: $scr, g: $scg, b: $scb) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("字幕样式").font(.headline)
+                Spacer()
+                Button("重置默认") { resetDefaults() }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+            row("主字幕大小", value: $fontSize, range: 10...40, unit: "pt")
+            row("双语副行大小", value: $secFontSize, range: 10...36, unit: "pt")
+            row("背景透明度", value: $bgOpacity, range: 0...1, display: { "\(Int($0 * 100))%" })
+            row("底部间距", value: $bottomPad, range: 0...80, unit: "pt")
+            Divider()
+            HStack {
+                Text("主行颜色").font(.callout).frame(width: 72, alignment: .leading)
+                ColorPicker("", selection: primaryColor, supportsOpacity: false).labelsHidden()
+                Spacer()
+                Text("副行颜色").font(.callout).frame(width: 72, alignment: .leading)
+                ColorPicker("", selection: secondaryColor, supportsOpacity: false).labelsHidden()
+            }
+            HStack(spacing: 8) {
+                Text("经典预设").font(.callout).foregroundStyle(.secondary)
+                ForEach(presets, id: \.0) { preset in
+                    Button {
+                        (cr, cg, cb)   = preset.1
+                        (scr, scg, scb) = preset.2
+                    } label: {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color(red: preset.1.0, green: preset.1.1, blue: preset.1.2))
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().strokeBorder(.secondary.opacity(0.3), lineWidth: 0.5))
+                            Circle().fill(Color(red: preset.2.0, green: preset.2.1, blue: preset.2.2))
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().strokeBorder(.secondary.opacity(0.3), lineWidth: 0.5))
+                            Text(preset.0).font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color(.controlBackgroundColor)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+    }
+
+    private func resetDefaults() {
+        fontSize = 18; secFontSize = 15; bgOpacity = 0.55; bottomPad = 18
+        cr = 1; cg = 1; cb = 1; scr = 1; scg = 0.93; scb = 0
+    }
+
+    private func colorBinding(r: Binding<Double>, g: Binding<Double>, b: Binding<Double>) -> Binding<Color> {
+        Binding(
+            get: { Color(red: r.wrappedValue, green: g.wrappedValue, blue: b.wrappedValue) },
+            set: { c in
+                guard let ns = NSColor(c).usingColorSpace(.deviceRGB) else { return }
+                r.wrappedValue = Double(ns.redComponent)
+                g.wrappedValue = Double(ns.greenComponent)
+                b.wrappedValue = Double(ns.blueComponent)
+            }
+        )
+    }
+
+    private func row(_ label: String, value: Binding<Double>, range: ClosedRange<Double>,
+                     unit: String = "", display: ((Double) -> String)? = nil) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.callout).frame(width: 90, alignment: .leading)
+            Slider(value: value, in: range)
+            Text(display?(value.wrappedValue) ?? "\(Int(value.wrappedValue))\(unit)")
+                .font(.system(size: 11, design: .monospaced))
+                .frame(width: 38, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - History popover
+
+struct HistoryPopoverView: View {
+    @ObservedObject var history: VideoHistory
+    var onSelect: (HistoryEntry) -> Void
+    @State private var clearHovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(alignment: .firstTextBaseline) {
+                Text("最近播放").font(.headline)
+                if !history.entries.isEmpty {
+                    Text("(\(history.entries.count))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+
+            // Content
+            if history.entries.isEmpty {
+                Text("暂无播放记录")
+                    .foregroundStyle(.secondary).font(.callout)
+                    .frame(maxWidth: .infinity).padding(20)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(history.entries) { entry in
+                            HistoryRowView(entry: entry,
+                                           onOpen: { onSelect(entry) },
+                                           onDelete: { history.remove(entry) })
+                            Divider().padding(.leading, 12)
+                        }
+                    }
+                }
+                .frame(maxHeight: 440)
+
+                // Footer
+                Rectangle()
+                    .fill(Color(.separatorColor))
+                    .frame(height: 1)
+                Button {
+                    history.clearAll()
+                } label: {
+                    Text("清空全部")
+                        .font(.system(size: 11))
+                        .foregroundStyle(clearHovering ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(clearHovering ? Color(.controlColor) : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { h in
+                    clearHovering = h
+                    if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+            }
+        }
+        .frame(width: 340)
+    }
+}
+
+struct HistoryRowView: View {
+    let entry: HistoryEntry
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+    @State private var hovering = false
+    @State private var thumbnail: NSImage? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // 缩略图
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(.windowBackgroundColor))
+                if let img = thumbnail {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 80, height: 45)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else {
+                    Image(systemName: "film")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: 80, height: 45)
+
+            // 标题 + 外挂字幕数
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.videoTitle)
+                    .font(.system(size: 12.5))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !entry.externalSubtitlePaths.isEmpty {
+                    Text("\(entry.externalSubtitlePaths.count) 个外挂字幕")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button { onDelete() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color(.tertiaryLabelColor))
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(hovering ? Color(.controlColor) : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { h in
+            hovering = h
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .onTapGesture { onOpen() }
+        .task(id: entry.videoPath) {
+            thumbnail = await loadVideoThumbnail(path: entry.videoPath)
+        }
+    }
+}
+
+// MARK: - Sidebar resize handle
+
+// NSViewRepresentable avoids SwiftUI DragGesture being stolen by the adjacent NSScrollView (List).
+struct SidebarResizeHandle: NSViewRepresentable {
+    @Binding var sidebarWidth: Double
+    let minWidth: Double
+    let maxWidth: Double
+
+    func makeNSView(context: Context) -> _ResizeHandleNSView { _ResizeHandleNSView() }
+
+    func updateNSView(_ nsView: _ResizeHandleNSView, context: Context) {
+        nsView.binding = $sidebarWidth
+        nsView.minWidth = minWidth
+        nsView.maxWidth = maxWidth
+    }
+}
+
+final class _ResizeHandleNSView: NSView {
+    var binding: Binding<Double>?
+    var minWidth: Double = 200
+    var maxWidth: Double = 600
+
+    private var dragStartX: CGFloat = 0
+    private var dragStartWidth: Double = 0
+    private var trackingArea: NSTrackingArea?
+    private let lineLayer = CALayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.masksToBounds = true
+        lineLayer.backgroundColor = NSColor.separatorColor.cgColor
+        layer?.addSublayer(lineLayer)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 8, height: NSView.noIntrinsicMetric) }
+
+    override func layout() {
+        super.layout()
+        let x = (bounds.width - 1) / 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        lineLayer.frame = CGRect(x: x, y: 0, width: 1, height: bounds.height)
+        CATransaction.commit()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        let ta = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self)
+        addTrackingArea(ta)
+        trackingArea = ta
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
+
+    override func mouseEntered(with event: NSEvent) {
+        lineLayer.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.5).cgColor
+    }
+    override func mouseExited(with event: NSEvent) {
+        lineLayer.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartX = event.locationInWindow.x
+        dragStartWidth = binding?.wrappedValue ?? 280
+    }
+    override func mouseDragged(with event: NSEvent) {
+        let delta = event.locationInWindow.x - dragStartX
+        let newWidth = min(maxWidth, max(minWidth, dragStartWidth - delta))
+        DispatchQueue.main.async { [weak self] in self?.binding?.wrappedValue = newWidth }
+    }
+}
