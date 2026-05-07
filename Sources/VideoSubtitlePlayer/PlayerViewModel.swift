@@ -52,6 +52,7 @@ class PlayerViewModel: ObservableObject {
     private var subtitleCache: [SubtitleMode: [Subtitle]] = [:]
     private var externalTrackURLs: [Int: URL] = [:]
     private var nextExternalTrackId = -100
+    private var extractionTask: Task<Void, Never>?
 
     init() {
         let interval = CMTime(seconds: 0.08, preferredTimescale: 600)
@@ -118,9 +119,12 @@ class PlayerViewModel: ObservableObject {
             await loadVideoThumbnail(path: thumbPath)
         }
 
+        // 取消上一个视频的提取任务，避免旧视频字幕写入新视频侧边栏
+        extractionTask?.cancel()
         // 延迟 1.5 秒再启动 FFmpeg 字幕提取，让 MPV 先完成初始解码不争 CPU
-        Task {
+        extractionTask = Task {
             try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
             await extractSubtitles(from: url)
         }
         // 下一个 RunLoop tick 再启动播放，让 SwiftUI 先渲染重置状态（isVideoLoaded=false）
@@ -203,6 +207,9 @@ class PlayerViewModel: ObservableObject {
     private func extractSubtitles(from url: URL) async {
         let (immediateSubs, immediateTracks) = await SubtitleExtractor.extractImmediate(from: url)
 
+        let stillCurrent = await MainActor.run { self.videoURL == url }
+        guard !Task.isCancelled, stillCurrent else { return }
+
         // 立即检测第一条轨道语言，不等预缓存
         let immediateLabel = SubtitleExtractor.languageLabel(from: immediateSubs)
 
@@ -226,6 +233,10 @@ class PlayerViewModel: ObservableObject {
         }
 
         let labeledTracks = await SubtitleExtractor.listTracksWithLabels(from: url)
+
+        let stillCurrent2 = await MainActor.run { self.videoURL == url }
+        guard !Task.isCancelled, stillCurrent2 else { return }
+
         let companionTracks = SubtitleExtractor.findCompanionTracks(for: url)
         var allTracks = labeledTracks + companionTracks
         if allTracks.isEmpty { allTracks = immediateTracks }
