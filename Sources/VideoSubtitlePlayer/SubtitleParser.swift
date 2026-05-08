@@ -39,7 +39,22 @@ enum SubtitleParser {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             subtitles.append(Subtitle(id: subtitles.count, startTime: timing.0, endTime: timing.1, text: text))
         }
-        return subtitles
+        return deduplicateByStartTime(subtitles)
+    }
+
+    // 相同 startTime 保留最后一条（去掉字幕作者在片头写的重复水印行）
+    private static func deduplicateByStartTime(_ subs: [Subtitle]) -> [Subtitle] {
+        var seen: [TimeInterval: Int] = [:]       // startTime → index in result
+        var result: [Subtitle] = []
+        for sub in subs {
+            if let existing = seen[sub.startTime] {
+                result[existing] = Subtitle(id: existing, startTime: sub.startTime, endTime: sub.endTime, text: sub.text)
+            } else {
+                seen[sub.startTime] = result.count
+                result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: sub.text))
+            }
+        }
+        return result
     }
 
     private static func parseSRTTiming(_ line: String) -> (TimeInterval, TimeInterval)? {
