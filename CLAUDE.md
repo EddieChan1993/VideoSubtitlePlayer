@@ -144,6 +144,32 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 `SubtitleListView` 的 `onChange(of: vm.sidebarScrollTrigger)` 响应，调用 `proxy.scrollTo(sidebarHighlightIndex)`。  
 解决 `sidebarHighlightIndex` 值不变时 `onChange` 不触发的问题。
 
+### 历史记录与缩略图
+
+- **`VideoHistory`**：`UserDefaults` 持久化，最多 50 条，`HistoryEntry` 含 `videoPath / videoTitle / lastOpened / externalSubtitlePaths`。
+- **`ThumbnailCache`**：`NSCache`（60 条）+ 磁盘（`~/Library/Caches/SubMelon/thumbnails/`）双层缓存；文件名用 djb2 稳定哈希（`String.hashValue` 跨进程不稳定）。
+- **`loadVideoThumbnail`**：命中缓存直接返回；未命中时在 `Task.detached(priority: .background)` 里调用 `generateThumbnail`，不阻塞主线程。
+- **`generateThumbnail`**：AVFoundation 优先（`AVAssetImageGenerator`，容差 ±5 秒），失败时 ffmpeg 子进程兜底；截帧位置为 `duration / 2`。
+- **MKV 时长问题**：`AVURLAsset.load(.duration)` 对 MKV 返回 0；通过 `ffmpegDuration()` 解析 `ffmpeg -i` stderr 的 `Duration: HH:MM:SS.ss` 获取真实时长，再定位中间帧。
+- **ffmpeg 单帧输出**：新版 ffmpeg 要求加 `-update 1` 才能输出单张 JPEG，否则非零退出。
+- 删除历史条目 / 清空历史时同步清理对应磁盘缩略图（`ThumbnailCache.remove` / `removeAll`）。
+
+### 字幕轨道 Chip 拖拽排序
+
+- `chipOrder: [String]`（`@Published`，VM 持有）存储 stableId 列表，切视频时重置为空。
+- `stableId`：`"s{track.id}"` 或 `"b{primary.id}_{secondary.id}"`，不依赖可变的 label 字符串。
+- `SubtitleListView` 的 `orderedOptions` 按 `chipOrder` 重排，新出现的轨道追加到末尾。
+- 拖拽通过 `onDrag` + `ChipDropDelegate`（`DropDelegate`）实现；`dropEntered` 时实时移动数组，`performDrop` 时清除 draggedId。
+- `orderedModes`（键盘快捷键 1/2/3 的顺序）依赖 `chipOrder` 构造，拖拽后快捷键自动跟随。
+- Chip 区包裹在 `ScrollView(.horizontal)` 中，防止过多轨道挤压右侧控件。
+
+### 侧边栏宽度拖拽（ResizeHandle）
+
+- 纯 SwiftUI `DragGesture` 被下方 `NSScrollView` 截获，拖拽无效。
+- 改用 `NSViewRepresentable` 包装 `_ResizeHandleNSView: NSView`，在 `mouseDown` / `mouseDragged` AppKit 事件中直接更新 `sidebarWidth`。
+- 拖拽 view 宽度固定 8pt，加 `.clipped()` 防止子视图溢出遮挡拖拽区域。
+- `SubtitleListView` 整体加 `.clipped()`，Chip 区用 `ScrollView(.horizontal)` 防止溢出。
+
 ### C ABI 说明
 
 `MPVController` 所有 libmpv 函数指针通过 `sym<T>(_:)` + `unsafeBitCast` 从 `dlsym` 转换。  
@@ -242,6 +268,22 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | 新增 `sidebarScrollTrigger` 自增强制触发滚动 |
 | **文件** | `PlayerViewModel.swift`；`SubtitleListView.swift` |
 
+### Bug 12 — 来回切换视频时侧边栏字幕不刷新
+| | |
+|---|---|
+| **现象** | 切换到新视频后，侧边栏仍显示旧视频的字幕，或旧字幕在短暂空白后重新出现 |
+| **根本原因** | `loadVideo` 启动的字幕提取 `Task` 未保存引用，切换视频时无法取消；旧 Task 在 1.5 秒延迟后醒来，将旧视频字幕写入 `subtitles` / `availableTracks` |
+| **修复** | 新增 `extractionTask: Task<Void, Never>?`，`loadVideo` 时先 `cancel()` 旧 Task；`extractSubtitles` 内两个关键 `await` 点后检查 `Task.isCancelled` 和 `videoURL == url`，双重保险 |
+| **文件** | `PlayerViewModel.swift` — `loadVideo()`、`extractSubtitles(from:)` |
+
+### Bug 13 — 切换视频后画面卡死在旧帧
+| | |
+|---|---|
+| **现象** | 来回切换历史记录视频时，画面停在切换前的旧帧，无法播放新视频 |
+| **根本原因** | `mpvController` 未声明 `@Published`，SwiftUI 在同一 RunLoop 内将 `useMPV false→true` 合并为无变化，`MPVPlayerView.updateNSView` 从不调用，旧 `MPVHostView` 持有旧 controller |
+| **修复** | `mpvController` 改为 `@Published`；实现 `updateNSView`，检测 controller 变化时调用 `reconnect(to:)` 重连 `onNeedsDisplay` 回调 |
+| **文件** | `PlayerViewModel.swift`；`MPVPlayerView.swift` — `MPVHostView.reconnect(to:)`、`MPVPlayerView.updateNSView` |
+
 ---
 
 ## 规律总结
@@ -257,3 +299,7 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 9. **MPV 初始状态同步**：MPV 实例创建后所有属性均为默认值，必须在 `prepare` 后立即同步 VM 的对应 `@Published` 值。
 10. **动态库打包**：`install_name_tool -change` 修改引用路径后，对应 dylib 必须重新 `codesign`，否则签名校验失败。
 11. **批量打包效率**：编译和 dylib 复制只做一次放进暂存目录，每个发行版只需 `cp -r staging` + 写 plist + 签名，避免重复耗时操作。
+12. **后台 Task 必须保存引用**：`Task { }` 若不存入属性，切换状态时无法取消，旧任务会在 await 完成后用过期数据覆盖新状态；涉及视频切换的所有异步任务都要在 `loadVideo` 时 `cancel()`。
+13. **AVFoundation 读不了 MKV 时长**：`AVURLAsset.load(.duration)` 对 MKV 返回 0；需用 ffmpeg 子进程解析 stderr 的 `Duration:` 行作为 fallback。
+14. **新版 ffmpeg 单帧输出**：`ffmpeg -frames:v 1` 输出单张图片时必须加 `-update 1`，否则非零退出（即使文件已生成）。
+15. **SwiftUI updateNSView 与 @Published**：`NSViewRepresentable.updateNSView` 仅在 SwiftUI 检测到 @Published 变化时调用；持有 AppKit 重型对象的属性若未加 `@Published`，视图切换时 `updateNSView` 不触发，宿主 view 持续引用旧对象。
