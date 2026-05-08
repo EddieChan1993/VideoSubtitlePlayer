@@ -631,7 +631,7 @@ struct HistoryPopoverView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 440)
+                .frame(maxHeight: min(CGFloat(history.entries.count), 8) * 62)
 
                 // Footer
                 Rectangle()
