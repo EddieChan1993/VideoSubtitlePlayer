@@ -701,13 +701,8 @@ struct HistoryRowView: View {
 
             Spacer()
 
-            Button { onDelete() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color(.tertiaryLabelColor))
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0)
+            DeleteButton(action: onDelete)
+                .opacity(hovering ? 1 : 0)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -725,6 +720,28 @@ struct HistoryRowView: View {
 }
 
 // MARK: - Sidebar resize handle
+
+// MARK: - DeleteButton
+
+private struct DeleteButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(hovering ? Color(.secondaryLabelColor) : Color(.tertiaryLabelColor))
+                .scaleEffect(hovering ? 1.15 : 1.0)
+                .animation(.easeInOut(duration: 0.12), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { h in
+            hovering = h
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+}
 
 // NSViewRepresentable avoids SwiftUI DragGesture being stolen by the adjacent NSScrollView (List).
 struct SidebarResizeHandle: NSViewRepresentable {

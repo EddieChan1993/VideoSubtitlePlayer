@@ -42,13 +42,16 @@ enum SubtitleParser {
         return deduplicateByStartTime(subtitles)
     }
 
-    // 相同 startTime 保留最后一条（去掉字幕作者在片头写的重复水印行）
+    // 相同 startTime 的条目合并文本（换行拼接），endTime 取最大值
     private static func deduplicateByStartTime(_ subs: [Subtitle]) -> [Subtitle] {
-        var seen: [TimeInterval: Int] = [:]       // startTime → index in result
+        var seen: [TimeInterval: Int] = [:]
         var result: [Subtitle] = []
         for sub in subs {
-            if let existing = seen[sub.startTime] {
-                result[existing] = Subtitle(id: existing, startTime: sub.startTime, endTime: sub.endTime, text: sub.text)
+            if let idx = seen[sub.startTime] {
+                let prev = result[idx]
+                let merged = prev.text + "\n" + sub.text
+                let endTime = max(prev.endTime, sub.endTime)
+                result[idx] = Subtitle(id: idx, startTime: prev.startTime, endTime: endTime, text: merged)
             } else {
                 seen[sub.startTime] = result.count
                 result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: sub.text))
