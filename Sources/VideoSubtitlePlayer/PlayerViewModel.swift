@@ -719,6 +719,43 @@ class PlayerViewModel: ObservableObject {
         return String(format: "%d:%02d", m, s)
     }
 
+    // MARK: - Go Home
+
+    func goHome() {
+        extractionTask?.cancel()
+        extractionTask = nil
+        mpvController?.stop()
+        mpvController = nil
+        useMPV = false
+        player.replaceCurrentItem(with: nil)
+        fragStreamer?.cleanup()
+        fragStreamer = nil
+        cleanupTempFile()
+
+        videoURL = nil
+        videoTitle = ""
+        subtitles = []
+        availableTracks = []
+        selectedMode = nil
+        currentSubtitleIndex = -1
+        sidebarHighlightIndex = -1
+        sidebarScrollTrigger = 0
+        videoError = nil
+        isVideoLoaded = false
+        isPlaying = false
+        isPreparing = false
+        isLoadingSubtitles = false
+        loadingStatus = ""
+        currentTime = 0
+        videoDuration = 0
+        trackLabels = [:]
+        subtitleCache = [:]
+        isScrubbing = false
+        externalTrackURLs = [:]
+        nextExternalTrackId = -100
+        chipOrder = []
+    }
+
     // MARK: - Cleanup
 
     private func cleanupTempFile() {

@@ -133,14 +133,15 @@ bundle_dylib() {
     chmod 644 "$dst"
     install_name_tool -id "@executable_path/../Frameworks/$name" "$dst" 2>/dev/null || true
 
-    while IFS= read -r dep; do
-        local dep_name; dep_name=$(basename "$dep")
-        install_name_tool -change "$dep" \
-            "@executable_path/../Frameworks/$dep_name" "$dst" 2>/dev/null || true
-        bundle_dylib "$dep"
-    done < <(otool -L "$src" 2>/dev/null \
-               | awk 'NR>1{print $1}' \
-               | grep -E "^(/opt/homebrew|/usr/local)")
+    otool -L "$src" 2>/dev/null \
+        | awk 'NR>1{print $1}' \
+        | grep -E "^(/opt/homebrew|/usr/local)" \
+        | while IFS= read -r dep; do
+            dep_name=$(basename "$dep")
+            install_name_tool -change "$dep" \
+                "@executable_path/../Frameworks/$dep_name" "$dst" 2>/dev/null || true
+            bundle_dylib "$dep"
+        done
 }
 
 echo "▶  打包 libmpv…"
@@ -162,14 +163,15 @@ FFMPEG_SRC=$(command -v ffmpeg 2>/dev/null || true)
 if [ -n "$FFMPEG_SRC" ]; then
     cp "$FFMPEG_SRC" "$STAGING_MACOS/ffmpeg"
     chmod +x "$STAGING_MACOS/ffmpeg"
-    while IFS= read -r dep; do
-        dep_name=$(basename "$dep")
-        install_name_tool -change "$dep" \
-            "@executable_path/../Frameworks/$dep_name" "$STAGING_MACOS/ffmpeg" 2>/dev/null || true
-        bundle_dylib "$dep"
-    done < <(otool -L "$FFMPEG_SRC" 2>/dev/null \
-               | awk 'NR>1{print $1}' \
-               | grep -E "^(/opt/homebrew|/usr/local)")
+    otool -L "$FFMPEG_SRC" 2>/dev/null \
+        | awk 'NR>1{print $1}' \
+        | grep -E "^(/opt/homebrew|/usr/local)" \
+        | while IFS= read -r dep; do
+            dep_name=$(basename "$dep")
+            install_name_tool -change "$dep" \
+                "@executable_path/../Frameworks/$dep_name" "$STAGING_MACOS/ffmpeg" 2>/dev/null || true
+            bundle_dylib "$dep"
+        done
     echo "   ✓  ffmpeg 已打包"
 else
     echo "⚠️   未找到 ffmpeg（brew install ffmpeg）"

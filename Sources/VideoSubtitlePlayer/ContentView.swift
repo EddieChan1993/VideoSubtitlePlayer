@@ -29,7 +29,7 @@ struct ContentView: View {
             if vm.isVideoLoaded {
                 playerLayout
             } else {
-                DropZoneView(isTargeted: dropTargeted, onOpen: vm.openFile)
+                homeLayout
             }
         }
         .frame(minWidth: 760, minHeight: 500)
@@ -38,28 +38,20 @@ struct ContentView: View {
             vm.openFile()
         }
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button(action: vm.openFile) {
-                    Label("打开视频", systemImage: "folder")
-                }
-                .help("打开视频文件 (⌘O)")
-            }
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    showHistory.toggle()
-                } label: {
-                    Label("最近播放", systemImage: "clock")
-                }
-                .help("最近播放记录")
-                .popover(isPresented: $showHistory, arrowEdge: .bottom) {
-                    HistoryPopoverView(history: VideoHistory.shared) { entry in
-                        vm.loadVideoFromHistory(entry)
-                        showHistory = false
+            if vm.isVideoLoaded {
+                ToolbarItem(placement: .navigation) {
+                    Button(action: vm.openFile) {
+                        Label("打开视频", systemImage: "folder")
                     }
+                    .help("打开视频文件 (⌘O)")
                 }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isVideoLoaded {
+                ToolbarItem(placement: .navigation) {
+                    Button(action: vm.goHome) {
+                        Label("回到首页", systemImage: "house")
+                    }
+                    .help("停止播放，回到首页")
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: vm.exportSubtitlesAsCSV) {
                         Label("导出字幕", systemImage: "square.and.arrow.up")
                     }
@@ -95,6 +87,18 @@ struct ContentView: View {
         }
         .onDisappear {
             if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        }
+    }
+
+    private var homeLayout: some View {
+        HStack(spacing: 0) {
+            DropZoneView(isTargeted: dropTargeted, onOpen: vm.openFile)
+            if !VideoHistory.shared.entries.isEmpty {
+                Divider()
+                HistoryPanelView { entry in
+                    vm.loadVideoFromHistory(entry)
+                }
+            }
         }
     }
 
@@ -593,6 +597,65 @@ struct SubtitleSettingsView: View {
 }
 
 // MARK: - History popover
+
+// MARK: - HistoryPanelView（首页侧边栏）
+
+struct HistoryPanelView: View {
+    @ObservedObject private var history = VideoHistory.shared
+    var onSelect: (HistoryEntry) -> Void
+    @State private var clearHovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(alignment: .firstTextBaseline) {
+                Text("最近播放").font(.headline)
+                Text("(\(history.entries.count))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+
+            // List
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(history.entries) { entry in
+                        HistoryRowView(entry: entry,
+                                       onOpen: { onSelect(entry) },
+                                       onDelete: { history.remove(entry) })
+                        Divider().padding(.leading, 12)
+                    }
+                }
+            }
+
+            // Footer
+            Divider()
+            Button {
+                history.clearAll()
+            } label: {
+                Text("清空全部")
+                    .font(.system(size: 11))
+                    .foregroundStyle(clearHovering ? Color.primary : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(clearHovering ? Color(.controlColor) : Color.clear)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { h in
+                clearHovering = h
+                if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
+        .frame(width: 280)
+        .background(.background)
+    }
+}
+
+// MARK: - HistoryPopoverView（工具栏弹出，视频播放中不可见）
 
 struct HistoryPopoverView: View {
     @ObservedObject var history: VideoHistory
