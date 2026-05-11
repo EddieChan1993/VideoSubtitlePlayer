@@ -51,6 +51,20 @@ struct ContentView: View {
                     }
                     .help("停止播放，回到首页")
                 }
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        showHistory.toggle()
+                    } label: {
+                        Label("最近播放", systemImage: "clock")
+                    }
+                    .help("最近播放记录")
+                    .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                        HistoryPopoverView(history: VideoHistory.shared) { entry in
+                            vm.loadVideoFromHistory(entry)
+                            showHistory = false
+                        }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: vm.exportSubtitlesAsCSV) {
                         Label("导出字幕", systemImage: "square.and.arrow.up")
