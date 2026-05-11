@@ -69,6 +69,8 @@ struct ContentView: View {
                 let fr = NSApp.keyWindow?.firstResponder
                 if fr is NSTextView || fr is NSTextField { return event }
                 switch event.keyCode {
+                case 13: vm.jumpToFirstSubtitle();    return nil  // W
+                case 14: vm.jumpToLastSubtitle();     return nil  // E
                 case 0:  vm.previousSubtitle();       return nil  // A
                 case 1:  vm.restartCurrentSubtitle(); return nil  // S
                 case 2:  vm.nextSubtitle();           return nil  // D
@@ -343,6 +345,9 @@ struct NavigationBarView: View {
                 barDivider
 
                 // ── 字幕导航 ──────────────────────────────────
+                BarButton(icon: "backward.end.alt.fill", help: "跳到第一条字幕 (W)",
+                          disabled: vm.subtitles.isEmpty,
+                          action: vm.jumpToFirstSubtitle)
                 BarButton(icon: "backward.end.fill", help: "上一条字幕 (A)",
                           disabled: vm.sidebarHighlightIndex <= 0 && vm.subtitles.isEmpty,
                           action: vm.previousSubtitle)
@@ -352,6 +357,9 @@ struct NavigationBarView: View {
                 BarButton(icon: "forward.end.fill", help: "下一条字幕 (D)",
                           disabled: vm.sidebarHighlightIndex >= vm.subtitles.count - 1 || vm.subtitles.isEmpty,
                           action: vm.nextSubtitle)
+                BarButton(icon: "forward.end.alt.fill", help: "跳到最后一条字幕 (E)",
+                          disabled: vm.subtitles.isEmpty,
+                          action: vm.jumpToLastSubtitle)
 
                 barDivider
 

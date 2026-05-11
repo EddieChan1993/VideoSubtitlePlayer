@@ -500,6 +500,16 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    func jumpToFirstSubtitle() {
+        guard let first = subtitles.first else { return }
+        jumpToSubtitle(first)
+    }
+
+    func jumpToLastSubtitle() {
+        guard let last = subtitles.last else { return }
+        jumpToSubtitle(last)
+    }
+
     // MARK: - Track label
 
     /// Returns a display label for a track; falls back to content-based language detection
