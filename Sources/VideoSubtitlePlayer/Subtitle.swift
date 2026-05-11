@@ -37,9 +37,11 @@ struct Subtitle: Identifiable, Equatable {
     var startTimeString: String { formatTime(startTime) }
 
     private func formatTime(_ t: TimeInterval) -> String {
-        let m = Int(t) / 60
-        let s = Int(t) % 60
-        return String(format: "%d:%02d", m, s)
+        let total = Int(t)
+        let m = total / 60
+        let s = total % 60
+        let ms = Int((t - Double(total)) * 1000)
+        return String(format: "%d:%02d.%03d", m, s, ms)
     }
 }
 

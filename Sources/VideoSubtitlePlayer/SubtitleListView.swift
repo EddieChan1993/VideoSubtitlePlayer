@@ -314,7 +314,7 @@ struct SubtitleRow: View {
             Text(subtitle.startTimeString)
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 62, alignment: .trailing)
                 .padding(.top, 1)
 
             Text(subtitle.cleanText)

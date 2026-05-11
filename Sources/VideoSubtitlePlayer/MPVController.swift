@@ -275,8 +275,8 @@ final class MPVController {
                        intent: .defaultIntent)
     }
 
-    func seek(to time: TimeInterval) { cmd(["seek", String(time), "absolute+keyframes"]) }
-    func seekExact(to time: TimeInterval) { cmd(["seek", String(time), "absolute"]) }
+    func seek(to time: TimeInterval) { cmd(["seek", String(format: "%.3f", time), "absolute+keyframes"]) }
+    func seekExact(to time: TimeInterval) { cmd(["seek", String(format: "%.3f", time), "absolute"]) }
     func setPlaying(_ playing: Bool) { cmd(["set", "pause", playing ? "no" : "yes"]) }
     func setVolume(_ volume: Double) { cmd(["set", "volume", String(volume)]) }
 
