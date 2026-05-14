@@ -395,12 +395,27 @@ class PlayerViewModel: ObservableObject {
     private var currentPlaybackTime: TimeInterval = 0
     /// 上次推送 currentTime 的墙钟时间（节流用，与播放位置无关）
     private var lastTimePublish: CFTimeInterval = 0
-    /// jumpToSubtitle 后强制持有的目标字幕：MPV seek 落帧 PTS 可能略早于 startTime，
-    /// 持有期间不让 syncCurrentSubtitle 将索引错误清零；视频自然播过 endTime 后释放。
-    private var forcedSubtitleAfterSeek: Subtitle? = nil
+    /// jumpToSubtitle 后待确认的帧位目标时刻：
+    /// seek 落帧 PTS 可能早于 startTime，此时用 frame-step 前进到第一帧 ≥ startTime，
+    /// 完成后恢复播放。为 nil 表示无待处理的帧对齐。
+    private var pendingFrameStepTarget: TimeInterval? = nil
 
     private func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
+
+        // ── 帧对齐阶段：seek 后若落在 startTime 之前，逐帧前进直到画面对齐 ──
+        if let target = pendingFrameStepTarget {
+            if time < target - 0.001, let mpv = mpvController {
+                // 还在目标帧之前，再前进一帧
+                mpv.frameStep()
+                return
+            }
+            // 已到达或越过 startTime 对应帧，恢复播放
+            pendingFrameStepTarget = nil
+            mpvController?.setPlaying(true)
+            isPlaying = true
+        }
+
         // currentTime 节流：约 10fps 更新进度条，避免每帧触发 SwiftUI 全量重绘
         let now = CACurrentMediaTime()
         if now - lastTimePublish >= 0.1 || !isPlaying {
@@ -409,19 +424,6 @@ class PlayerViewModel: ObservableObject {
         }
         if !useMPV, let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 {
             videoDuration = dur
-        }
-
-        // 字幕导航后的强制持有：MPV 落帧 PTS 可能比 startTime 早一帧（≤42ms），
-        // 在目标字幕结束前或视频跳走前，直接锁定索引，不重新计算。
-        if let forced = forcedSubtitleAfterSeek {
-            let escaped = time >= forced.endTime || time < forced.startTime - 0.5
-            if !escaped {
-                let idx = forced.id
-                if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
-                if idx != sidebarHighlightIndex { sidebarHighlightIndex = idx }
-                return
-            }
-            forcedSubtitleAfterSeek = nil
         }
 
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
@@ -464,21 +466,19 @@ class PlayerViewModel: ObservableObject {
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
         currentTime = subtitle.startTime
-        // 强制持有目标字幕：MPV absolute+exact seek 落帧 PTS 可能比 startTime 早一帧（≤42ms），
-        // 先锁定索引，syncCurrentSubtitle 看到视频自然播过 endTime 后再释放。
-        forcedSubtitleAfterSeek = subtitle
         currentSubtitleIndex = subtitle.id
         sidebarHighlightIndex = subtitle.id
         if let mpv = mpvController {
+            // 先暂停：frame-step 只在 paused 状态下工作。
+            // seek 落帧后由 syncCurrentSubtitle 检查是否需要 frame-step，
+            // 对齐到第一帧 ≥ startTime 后自动恢复播放。
+            if isPlaying { mpv.setPlaying(false); isPlaying = false }
+            pendingFrameStepTarget = subtitle.startTime
             mpv.seekExact(to: subtitle.startTime)
-            if !isPlaying {
-                mpv.setPlaying(true)
-                isPlaying = true
-            }
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-            if player.timeControlStatus != .playing { player.play(); isPlaying = true }
+            player.play(); isPlaying = true
         }
     }
 
