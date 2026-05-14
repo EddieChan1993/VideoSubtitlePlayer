@@ -395,26 +395,8 @@ class PlayerViewModel: ObservableObject {
     private var currentPlaybackTime: TimeInterval = 0
     /// 上次推送 currentTime 的墙钟时间（节流用，与播放位置无关）
     private var lastTimePublish: CFTimeInterval = 0
-    /// jumpToSubtitle 后待确认的帧位目标时刻：
-    /// seek 落帧 PTS 可能早于 startTime，此时用 frame-step 前进到第一帧 ≥ startTime，
-    /// 完成后恢复播放。为 nil 表示无待处理的帧对齐。
-    private var pendingFrameStepTarget: TimeInterval? = nil
-
     private func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
-
-        // ── 帧对齐阶段：seek 后若落在 startTime 之前，逐帧前进直到画面对齐 ──
-        if let target = pendingFrameStepTarget {
-            if time < target - 0.001, let mpv = mpvController {
-                // 还在目标帧之前，再前进一帧
-                mpv.frameStep()
-                return
-            }
-            // 已到达或越过 startTime 对应帧，恢复播放
-            pendingFrameStepTarget = nil
-            mpvController?.setPlaying(true)
-            isPlaying = true
-        }
 
         // currentTime 节流：约 10fps 更新进度条，避免每帧触发 SwiftUI 全量重绘
         let now = CACurrentMediaTime()
@@ -465,20 +447,22 @@ class PlayerViewModel: ObservableObject {
     }
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
+        // 自然播放时，字幕在满足 startTime <= time 的第一帧出现；
+        // 跳转时 seekExact(startTime) 会落在包含 startTime 的帧的 PTS（< startTime），
+        // 导致匹配失败。直接 seek 到 startTime + 一帧（1/24s ≈ 42ms），
+        // MPV 精确落在第一帧 PTS ≥ startTime，与自然播放行为完全一致。
+        // 无状态机、无回调竞争。
+        let seekTime = subtitle.startTime + 1.0 / 24.0
         currentTime = subtitle.startTime
         currentSubtitleIndex = subtitle.id
         sidebarHighlightIndex = subtitle.id
         if let mpv = mpvController {
-            // 先暂停：frame-step 只在 paused 状态下工作。
-            // seek 落帧后由 syncCurrentSubtitle 检查是否需要 frame-step，
-            // 对齐到第一帧 ≥ startTime 后自动恢复播放。
-            if isPlaying { mpv.setPlaying(false); isPlaying = false }
-            pendingFrameStepTarget = subtitle.startTime
-            mpv.seekExact(to: subtitle.startTime)
+            mpv.seekExact(to: seekTime)
+            if !isPlaying { mpv.setPlaying(true); isPlaying = true }
         } else {
-            let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
+            let t = CMTime(seconds: seekTime, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-            player.play(); isPlaying = true
+            if player.timeControlStatus != .playing { player.play(); isPlaying = true }
         }
     }
 
