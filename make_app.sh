@@ -102,6 +102,14 @@ else
     echo "⚠️   图标生成失败，跳过"
 fi
 
+# ── 关闭正在运行的 SubMelon ───────────────────────────────────────────────────
+if pgrep -x "$APP" > /dev/null 2>&1; then
+    echo "▶  关闭正在运行的 ${APP}…"
+    osascript -e "quit app \"${APP}\"" 2>/dev/null || pkill -x "$APP" 2>/dev/null || true
+    sleep 0.5
+    echo "   ✓  已关闭"
+fi
+
 # ── 编译 Release ──────────────────────────────────────────────────────────────
 echo "▶  编译 Release 版本…"
 swift build -c release
