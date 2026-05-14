@@ -40,7 +40,8 @@ struct Subtitle: Identifiable, Equatable {
         let total = Int(t)
         let m = total / 60
         let s = total % 60
-        return String(format: "%d:%02d", m, s)
+        let ms = Int((t - Double(total)) * 1000)
+        return String(format: "%d:%02d.%03d", m, s, ms)
     }
 }
 

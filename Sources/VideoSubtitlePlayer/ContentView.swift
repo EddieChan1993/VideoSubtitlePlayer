@@ -158,7 +158,7 @@ struct ContentView: View {
             videoSubtitleOverlay
                 .allowsHitTesting(false)
             HStack(spacing: 8) {
-                Text(formatTime(isSeeking ? seekValue : vm.currentTime))
+                Text(formatTime(isSeeking ? seekValue : vm.currentTime, showMs: true))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.white)
                     .fixedSize()
@@ -201,13 +201,22 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func formatTime(_ t: Double) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
+    private func formatTime(_ t: Double, showMs: Bool = false) -> String {
+        guard t.isFinite, t >= 0 else { return "0:00.000" }
         let total = Int(t)
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+        let ms = Int((t - Double(total)) * 1000)
+        if showMs {
+            return h > 0
+                ? String(format: "%d:%02d:%02d.%03d", h, m, s, ms)
+                : String(format: "%d:%02d.%03d", m, s, ms)
+        } else {
+            return h > 0
+                ? String(format: "%d:%02d:%02d", h, m, s)
+                : String(format: "%d:%02d", m, s)
+        }
     }
 
     @ViewBuilder
