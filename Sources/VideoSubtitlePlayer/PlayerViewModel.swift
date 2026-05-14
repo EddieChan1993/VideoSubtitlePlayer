@@ -324,7 +324,8 @@ class PlayerViewModel: ObservableObject {
         if let cached = subtitleCache[mode] {
             subtitles = cached
             let time = currentPlaybackTime
-            let idx = cached.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+            let frameTolerance: TimeInterval = 1.0 / 24
+            let idx = cached.firstIndex { $0.startTime - frameTolerance <= time && $0.endTime > time } ?? -1
             currentSubtitleIndex = idx
             if idx >= 0 {
                 sidebarHighlightIndex = idx
@@ -376,7 +377,8 @@ class PlayerViewModel: ObservableObject {
             guard self.selectedMode == mode else { return }
             self.subtitles = subs
             let time = self.currentPlaybackTime
-            let idx = subs.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+            let frameTolerance: TimeInterval = 1.0 / 24
+            let idx = subs.firstIndex { $0.startTime - frameTolerance <= time && $0.endTime > time } ?? -1
             self.currentSubtitleIndex = idx
             if idx >= 0 {
                 self.sidebarHighlightIndex = idx
@@ -407,7 +409,10 @@ class PlayerViewModel: ObservableObject {
         if !useMPV, let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 {
             videoDuration = dur
         }
-        let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+        // 容差约一帧（42ms @ 24fps）：seek 后 MPV 汇报的是帧 PTS，可能比字幕 startTime
+        // 早最多一帧，加容差确保 seek 落帧时仍能命中对应字幕。
+        let frameTolerance: TimeInterval = 1.0 / 24
+        let idx = subtitles.firstIndex { $0.startTime - frameTolerance <= time && $0.endTime > time } ?? -1
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
         // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
         // This keeps the sidebar showing the last seen entry highlighted.
@@ -435,7 +440,8 @@ class PlayerViewModel: ObservableObject {
 
     /// 拖动进度条时实时更新字幕高亮，不实际 seek 视频
     func previewSubtitleIndex(for time: Double) {
-        let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
+        let frameTolerance: TimeInterval = 1.0 / 24
+        let idx = subtitles.firstIndex { $0.startTime - frameTolerance <= time && $0.endTime > time } ?? -1
         currentSubtitleIndex = idx
         // 拖动时找最近字幕（含间隙）用于侧边栏定位
         if idx >= 0 {
