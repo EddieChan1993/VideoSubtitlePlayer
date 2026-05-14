@@ -168,7 +168,7 @@ struct SubtitleListView: View {
                     SubtitleRow(subtitle: sub, isCurrent: vm.sidebarHighlightIndex == sub.id)
                         .contentShape(Rectangle())
                         .onTapGesture { vm.jumpToSubtitle(sub) }
-                        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                        .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 20))
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
