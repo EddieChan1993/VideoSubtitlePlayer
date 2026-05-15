@@ -467,19 +467,23 @@ class PlayerViewModel: ObservableObject {
     }
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
-        // seekExact(startTime) 落帧 PTS ≤ startTime（最多差一帧 ≈ 42ms），
-        // forcedSubtitleAfterSeek 保证字幕正确显示直到视频自然播过 endTime。
+        // 先暂停再 seek，防止 absolute+exact 模式下音频在解码阶段抢跑导致音画不同步。
+        // seek 完成后统一 resume，保证音频和视频从同一位置同步启动。
         currentTime = subtitle.startTime
         currentSubtitleIndex = subtitle.id
         sidebarHighlightIndex = subtitle.id
         forcedSubtitleAfterSeek = subtitle
         if let mpv = mpvController {
+            mpv.setPlaying(false)
             mpv.seekExact(to: subtitle.startTime)
-            if !isPlaying { mpv.setPlaying(true); isPlaying = true }
+            mpv.setPlaying(true)
+            isPlaying = true
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
-            player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-            if player.timeControlStatus != .playing { player.play(); isPlaying = true }
+            player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                self?.player.play()
+                self?.isPlaying = true
+            }
         }
     }
 
