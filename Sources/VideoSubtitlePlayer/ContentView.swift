@@ -33,6 +33,9 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 500)
+        .onChange(of: vm.videoTitle) { _, title in
+            NSApp.mainWindow?.title = title.isEmpty ? "SubMelon" : title
+        }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
         .onReceive(NotificationCenter.default.publisher(for: .openVideoFile)) { _ in
             vm.openFile()
