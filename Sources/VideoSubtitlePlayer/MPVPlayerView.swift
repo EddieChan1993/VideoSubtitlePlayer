@@ -9,6 +9,7 @@ import SwiftUI
 final class MPVHostView: NSView {
 
     weak var mpvController: MPVController?
+    var onFrameReady: ((TimeInterval) -> Void)?
 
     private let renderQueue = DispatchQueue(label: "mpv.render", qos: .userInitiated)
     private var contextReady   = false
@@ -103,6 +104,9 @@ final class MPVHostView: NSView {
                     CATransaction.setDisableActions(true)
                     self.layer?.contents = img
                     CATransaction.commit()
+                    if let t = self.mpvController?.currentTimePos() {
+                        self.onFrameReady?(t)
+                    }
                 }
                 // 补渲：渲染期间收到了新帧信号，立即再渲一帧不等下次回调
                 if self.hasPendingFrame { self.scheduleRender() }
@@ -115,12 +119,16 @@ final class MPVHostView: NSView {
 
 struct MPVPlayerView: NSViewRepresentable {
     let controller: MPVController
+    var onFrameReady: ((TimeInterval) -> Void)?
 
     func makeNSView(context: Context) -> MPVHostView {
-        MPVHostView(controller: controller)
+        let v = MPVHostView(controller: controller)
+        v.onFrameReady = onFrameReady
+        return v
     }
 
     func updateNSView(_ nsView: MPVHostView, context: Context) {
+        nsView.onFrameReady = onFrameReady
         // controller 对象换了（新视频）但 SwiftUI 未重建 NSView，需手动重接
         guard nsView.mpvController !== controller else { return }
         nsView.reconnect(to: controller)

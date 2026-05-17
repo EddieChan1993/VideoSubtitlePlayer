@@ -48,7 +48,8 @@ private typealias mpv_terminate_fn  = @convention(c) (OpaquePointer) -> Void
 private typealias mpv_set_optstr_fn = @convention(c) (OpaquePointer, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Int32
 private typealias mpv_command_fn    = @convention(c) (OpaquePointer, UnsafePointer<UnsafePointer<CChar>?>) -> Int32
 private typealias mpv_observe_fn    = @convention(c) (OpaquePointer, UInt64, UnsafePointer<CChar>, Int32) -> Int32
-private typealias mpv_wait_event_fn = @convention(c) (OpaquePointer, Double) -> UnsafeRawPointer?
+private typealias mpv_wait_event_fn   = @convention(c) (OpaquePointer, Double) -> UnsafeRawPointer?
+private typealias mpv_get_property_fn = @convention(c) (OpaquePointer, UnsafePointer<CChar>, Int32, UnsafeMutableRawPointer) -> Int32
 
 // MARK: - 函数指针（Render API）
 
@@ -124,6 +125,7 @@ final class MPVController {
     private var fn_cmd:       mpv_command_fn?
     private var fn_observe:   mpv_observe_fn?
     private var fn_wait:      mpv_wait_event_fn?
+    private var fn_getProp:   mpv_get_property_fn?
 
     private var fn_renderCreate:      mpv_render_context_create_fn?
     private var fn_renderSetCallback: mpv_render_context_set_update_callback_fn?
@@ -150,6 +152,7 @@ final class MPVController {
         fn_cmd       = sym("mpv_command")
         fn_observe   = sym("mpv_observe_property")
         fn_wait      = sym("mpv_wait_event")
+        fn_getProp   = sym("mpv_get_property")
 
         fn_renderCreate      = sym("mpv_render_context_create")
         fn_renderSetCallback = sym("mpv_render_context_set_update_callback")
@@ -274,6 +277,14 @@ final class MPVController {
                        provider: provider,
                        decode: nil, shouldInterpolate: false,
                        intent: .defaultIntent)
+    }
+
+    /// 直接从 mpv 查询当前播放位置，可在任意线程调用。
+    func currentTimePos() -> TimeInterval {
+        guard let c = ctx, let fn = fn_getProp else { return 0 }
+        var val: Double = 0
+        "time-pos".withCString { key in _ = fn(c, key, MPV_FORMAT_DOUBLE, &val) }
+        return val
     }
 
     func seek(to time: TimeInterval) { cmd(["seek", String(format: "%.3f", time), "absolute+keyframes"]) }

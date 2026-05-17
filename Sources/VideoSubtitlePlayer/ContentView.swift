@@ -68,6 +68,14 @@ struct ContentView: View {
                         }
                     }
                 }
+                if vm.canConvertToMKV {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(action: vm.convertToMKV) {
+                            Label("内嵌字幕", systemImage: "arrow.down.doc")
+                        }
+                        .help("将外挂字幕内嵌进视频，生成 MKV 文件")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: vm.exportSubtitlesAsCSV) {
                         Label("导出字幕", systemImage: "square.and.arrow.up")
@@ -126,7 +134,7 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 ZStack {
                     if vm.useMPV, let mpv = vm.mpvController {
-                        MPVPlayerView(controller: mpv)
+                        MPVPlayerView(controller: mpv, onFrameReady: vm.syncCurrentSubtitle)
                     } else {
                         VideoPlayerView(player: vm.player)
                     }
@@ -134,6 +142,9 @@ struct ContentView: View {
                         preparingOverlay
                     } else if let err = vm.videoError {
                         videoErrorOverlay(err)
+                    }
+                    if vm.isConverting {
+                        convertingOverlay
                     }
                     seekBarOverlay
                 }
@@ -244,6 +255,22 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
             }
+        }
+    }
+
+    private var convertingOverlay: some View {
+        VStack {
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.7)
+                Text(vm.convertingStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.top, 12)
+            Spacer()
         }
     }
 
