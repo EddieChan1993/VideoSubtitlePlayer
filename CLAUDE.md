@@ -300,6 +300,25 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | `handleDrop` 中判断扩展名，属于字幕格式（`srt/vtt/webvtt/ass/ssa`）则调 `vm.loadExternalSubtitle(from:autoSelect:true)`，否则调 `vm.loadVideo` |
 | **文件** | `ContentView.swift` — `handleDrop(_:)` |
 
+### Bug 16 — 双语模式显示重复英文行
+| | |
+|---|---|
+| **现象** | 双语字幕列表中每条出现三行：英文 + 中文 + 英文（再来一遍） |
+| **根本原因 1** | ffmpeg 将 ASS 格式的 `\N` 换行符原样写入 SRT 输出，`cleanText` 只按真换行符 `\n` 分割，导致「英文\N中文」被视为单行，与英文轨道的单行对不上，行级去重失效 |
+| **根本原因 2** | `mergeBilingual()` 末尾会将所有未匹配到主轨的次轨（英文）条目无条件追加，当主轨已是双语格式时造成英文整轨重复 |
+| **修复 1** | `cleanText` 补充 `\N` → `\n` 和 `\n`（字面量）→ `\n` 转换，确保分割和去重基于统一的换行格式 |
+| **修复 2** | `mergeBilingual()` 开头检测主轨前 5 条：若 ≥ 2 条为多行且同时含 CJK 行和 Latin 行（≥4字符），视为主轨已是双语，直接返回主轨跳过合并 |
+| **修复 3** | 移除 `mergeBilingual()` 末尾追加未匹配次轨条目的逻辑 |
+| **文件** | `Subtitle.swift` — `cleanText`；`SubtitleExtractor.swift` — `mergeBilingual()` |
+
+### Bug 17 — 字幕跳转后视频慢于音频并加速追赶
+| | |
+|---|---|
+| **现象** | 点击字幕跳转后，视频定位到目标位置，但播放约 1 秒内画面明显落后于音频，随后加速赶上；在正常 MP4 视频上不复现 |
+| **根本原因** | 视频源为外挂字幕格式，但英文轨道字幕与双语轨道字幕的时间戳存在偏差（非内嵌字幕）；将视频转为内嵌字幕格式（ffmpeg `-c:s copy` 封装）后，时间戳对齐，seek 精度恢复正常 |
+| **修复** | 通过 ffmpeg 将外挂字幕内嵌到视频容器（生成新 MKV/MP4），使所有轨道时间基准一致，消除跳转后音画追赶现象 |
+| **文件** | `VideoConverter.swift` — 封装转换流程 |
+
 ---
 
 ## 规律总结
@@ -321,3 +340,5 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 15. **SwiftUI updateNSView 与 @Published**：`NSViewRepresentable.updateNSView` 仅在 SwiftUI 检测到 @Published 变化时调用；持有 AppKit 重型对象的属性若未加 `@Published`，视图切换时 `updateNSView` 不触发，宿主 view 持续引用旧对象。
 16. **mpv demuxer 受文件扩展名影响**：同一个文件，扩展名 `.rm` 触发 RealMedia demuxer（seek 精度差），改名为 `.mp4` 后 mpv 切换 demuxer（seek 精度正常）。对低精度容器格式，直接 `FileManager.moveItem` 改后缀即可解决，无需 ffmpeg 重新编码。
 17. **拖入与手动选择路径必须对齐**：`onDrop` 回调是独立入口，不会复用文件选择面板的逻辑。凡是手动选择支持的文件类型（如字幕），拖入处理函数也必须显式判断扩展名并路由到相同处理函数，否则两条路径行为不一致。
+18. **ASS 换行符在 SRT 中的残留**：ffmpeg 将 ASS 字幕转换为 SRT 时，`\N`（硬换行）和 `\n`（软换行）可能以字面量字符串保留，而非转换为真正的换行符。任何对字幕文本做行级处理的逻辑（去重、显示、分割）都必须先将 `\N`/`\n` 转为真换行，否则多语言轨道合并会失效。
+19. **外挂字幕 vs 内嵌字幕的 seek 精度**：外挂字幕文件（`.srt`/`.ass`）与视频本身使用独立的时间基准，英文轨和双语轨之间可能存在时间偏差，导致跳转后音画不同步（视频落后并加速追赶）。通过 ffmpeg 将字幕内嵌到容器，使所有轨道共享同一时间基准，可彻底消除此问题。
