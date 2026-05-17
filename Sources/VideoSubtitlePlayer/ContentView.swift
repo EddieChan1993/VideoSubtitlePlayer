@@ -288,7 +288,15 @@ struct ContentView: View {
                 if let u = item as? URL { return u }
                 return nil
             }()
-            if let url { DispatchQueue.main.async { vm.loadVideo(url: url) } }
+            guard let url else { return }
+            let subtitleExts: Set<String> = ["srt", "vtt", "webvtt", "ass", "ssa"]
+            DispatchQueue.main.async {
+                if subtitleExts.contains(url.pathExtension.lowercased()) {
+                    vm.loadExternalSubtitle(from: url, autoSelect: true)
+                } else {
+                    vm.loadVideo(url: url)
+                }
+            }
         }
         return true
     }

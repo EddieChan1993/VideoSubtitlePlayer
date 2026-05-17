@@ -284,6 +284,22 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | `mpvController` 改为 `@Published`；实现 `updateNSView`，检测 controller 变化时调用 `reconnect(to:)` 重连 `onNeedsDisplay` 回调 |
 | **文件** | `PlayerViewModel.swift`；`MPVPlayerView.swift` — `MPVHostView.reconnect(to:)`、`MPVPlayerView.updateNSView` |
 
+### Bug 14 — 字幕跳转后音画不同步（RealMedia / 低质量容器）
+| | |
+|---|---|
+| **现象** | 点击字幕跳转后，音频落点错误，音画明显不同步；拖动进度条到字幕前手动播放则完全正常 |
+| **根本原因** | `.rm` 文件使用 Cook 音频编解码器，RealMedia 容器的 seek 精度天然较低；`absolute+exact` seek 使视频定位到精确帧，但音频因 preroll/interleave 问题落到错误位置。mpv demuxer 选择**受文件扩展名影响**——扩展名 `.rm` 触发 RealMedia demuxer 的特殊 seek 路径，改成 `.mp4` 后 mpv 切换 demuxer，走标准 seek 路径，音频定位恢复正常 |
+| **修复** | 检测到低质量 seek 格式（`.rm` `.rmvb` `.flv` `.avi` `.mpg` `.mpeg` `.vob` `.wmv` `.asf` `.ts`）时弹窗提示，提供"重命名为 .mp4"选项；`FileManager.moveItem` 直接改扩展名，无需重新编码，播放重命名后的文件 |
+| **文件** | `PlayerViewModel.swift` — `offerConvertIfPoorSeek(url:)`；`loadVideo()` 调用处 |
+
+### Bug 15 — 拖入字幕文件被当成视频处理
+| | |
+|---|---|
+| **现象** | 将 `.srt` / `.ass` 等字幕文件拖入窗口后：① 字幕轨道语言识别失败（Chip 显示异常）；② 字幕文件被记录进视频历史 |
+| **根本原因** | `handleDrop` 对所有拖入文件统一调用 `vm.loadVideo(url:)`，未区分视频与字幕文件；字幕文件应走 `loadExternalSubtitle`，手动选择走的是正确路径，拖入走的是错误路径 |
+| **修复** | `handleDrop` 中判断扩展名，属于字幕格式（`srt/vtt/webvtt/ass/ssa`）则调 `vm.loadExternalSubtitle(from:autoSelect:true)`，否则调 `vm.loadVideo` |
+| **文件** | `ContentView.swift` — `handleDrop(_:)` |
+
 ---
 
 ## 规律总结
@@ -303,3 +319,5 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 13. **AVFoundation 读不了 MKV 时长**：`AVURLAsset.load(.duration)` 对 MKV 返回 0；需用 ffmpeg 子进程解析 stderr 的 `Duration:` 行作为 fallback。
 14. **新版 ffmpeg 单帧输出**：`ffmpeg -frames:v 1` 输出单张图片时必须加 `-update 1`，否则非零退出（即使文件已生成）。
 15. **SwiftUI updateNSView 与 @Published**：`NSViewRepresentable.updateNSView` 仅在 SwiftUI 检测到 @Published 变化时调用；持有 AppKit 重型对象的属性若未加 `@Published`，视图切换时 `updateNSView` 不触发，宿主 view 持续引用旧对象。
+16. **mpv demuxer 受文件扩展名影响**：同一个文件，扩展名 `.rm` 触发 RealMedia demuxer（seek 精度差），改名为 `.mp4` 后 mpv 切换 demuxer（seek 精度正常）。对低精度容器格式，直接 `FileManager.moveItem` 改后缀即可解决，无需 ffmpeg 重新编码。
+17. **拖入与手动选择路径必须对齐**：`onDrop` 回调是独立入口，不会复用文件选择面板的逻辑。凡是手动选择支持的文件类型（如字幕），拖入处理函数也必须显式判断扩展名并路由到相同处理函数，否则两条路径行为不一致。

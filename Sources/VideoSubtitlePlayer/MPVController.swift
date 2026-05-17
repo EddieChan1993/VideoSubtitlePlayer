@@ -4,6 +4,7 @@ import CoreGraphics
 
 // MARK: - libmpv 核心 ABI
 
+private let MPV_FORMAT_FLAG: Int32   = 3
 private let MPV_FORMAT_DOUBLE: Int32 = 5
 private let MPV_EVENT_SHUTDOWN: Int32 = 1
 private let MPV_EVENT_PROPERTY_CHANGE: Int32 = 22
@@ -109,10 +110,12 @@ final class MPVController {
     private var pixelBuf:    UnsafeMutableRawPointer?
     private var pixelBufSize = 0
 
-    var onTimeUpdate:   ((TimeInterval) -> Void)?
-    var onDuration:     ((TimeInterval) -> Void)?
+    var onTimeUpdate:    ((TimeInterval) -> Void)?
+    var onDuration:      ((TimeInterval) -> Void)?
     /// 主线程调用；有新帧时触发，调用方负责调用 renderFrameAsCGImage 并更新显示
-    var onNeedsDisplay: (() -> Void)?
+    var onNeedsDisplay:  (() -> Void)?
+    /// seek 完全结束时从事件循环线程调用（seeking 属性从 true 变 false）
+    var onSeekingEnded:  (() -> Void)?
 
     private var fn_create:    mpv_create_fn?
     private var fn_init:      mpv_initialize_fn?
@@ -161,9 +164,6 @@ final class MPVController {
         opt("yes",    "keep-open")
         opt("quiet",  "msg-level")
         opt("libmpv", "vo")
-        // Disable mpv's built-in subtitle rendering;
-        // subtitles are displayed via the SwiftUI overlay in ContentView instead,
-        // which gives us full control over visibility and track switching.
         opt("no",     "sub-visibility")
 
         guard fn_init?(mpvCtx) == 0 else { return false }
@@ -173,6 +173,7 @@ final class MPVController {
 
         _ = fn_observe?(mpvCtx, 1, "time-pos", MPV_FORMAT_DOUBLE)
         _ = fn_observe?(mpvCtx, 2, "duration", MPV_FORMAT_DOUBLE)
+        _ = fn_observe?(mpvCtx, 3, "seeking",  MPV_FORMAT_FLAG)
         cmd(["loadfile", url.path])
 
         Thread.detachNewThread { [weak self] in self?.eventLoop() }
@@ -309,14 +310,20 @@ final class MPVController {
             if ev.eventId == MPV_EVENT_SHUTDOWN { break }
             if ev.eventId == MPV_EVENT_PROPERTY_CHANGE, let d = ev.data {
                 let prop = d.assumingMemoryBound(to: MPVEventProperty.self).pointee
+                let propName = prop.name.map { String(cString: $0) } ?? ""
                 if prop.format == MPV_FORMAT_DOUBLE,
                    let dp = prop.data?.assumingMemoryBound(to: Double.self) {
                     let value = dp.pointee
-                    let propName = prop.name.map { String(cString: $0) } ?? ""
                     if propName == "duration", value > 0 {
                         DispatchQueue.main.async { [weak self] in self?.onDuration?(value) }
                     } else if propName == "time-pos", value >= 0 {
                         DispatchQueue.main.async { [weak self] in self?.onTimeUpdate?(value) }
+                    }
+                } else if prop.format == MPV_FORMAT_FLAG,
+                          let fp = prop.data?.assumingMemoryBound(to: Int32.self) {
+                    // seeking=0 表示 seek 完全结束，音视频均已就位
+                    if propName == "seeking", fp.pointee == 0 {
+                        DispatchQueue.main.async { [weak self] in self?.onSeekingEnded?() }
                     }
                 }
             }

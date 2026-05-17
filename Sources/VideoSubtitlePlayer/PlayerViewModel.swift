@@ -129,7 +129,12 @@ class PlayerViewModel: ObservableObject {
         }
         // 下一个 RunLoop tick 再启动播放，让 SwiftUI 先渲染重置状态（isVideoLoaded=false）
         DispatchQueue.main.async { [weak self] in
-            self?.playDirectly(url: url)
+            guard let self else { return }
+            if let converted = self.offerConvertIfPoorSeek(url: url) {
+                self.playDirectly(url: converted)
+            } else {
+                self.playDirectly(url: url)
+            }
         }
     }
 
@@ -441,7 +446,6 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Navigation
 
     func seek(to time: Double) {
-        // 用户主动拖动进度条，清除字幕导航的强制持有
         forcedSubtitleAfterSeek = nil
         // 立即更新 UI，不等 MPV 的 onTimeUpdate 回调，防止进度条松手后视觉弹回
         currentTime = time
@@ -467,17 +471,15 @@ class PlayerViewModel: ObservableObject {
     }
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
-        // 先暂停再 seek，防止 absolute+exact 模式下音频在解码阶段抢跑导致音画不同步。
-        // seek 完成后统一 resume，保证音频和视频从同一位置同步启动。
-        currentTime = subtitle.startTime
-        currentSubtitleIndex = subtitle.id
         sidebarHighlightIndex = subtitle.id
-        forcedSubtitleAfterSeek = subtitle
+        currentTime = subtitle.startTime
+        lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
-            mpv.setPlaying(false)
+            if !isPlaying {
+                mpv.setPlaying(true)
+                isPlaying = true
+            }
             mpv.seekExact(to: subtitle.startTime)
-            mpv.setPlaying(true)
-            isPlaying = true
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
@@ -754,6 +756,33 @@ class PlayerViewModel: ObservableObject {
         let m = total / 60
         let s = total % 60
         return String(format: "%d:%02d", m, s)
+    }
+
+    // MARK: - Format warning
+
+    /// Returns the URL to play: renamed .mp4 if user agreed, nil to play original.
+    private func offerConvertIfPoorSeek(url: URL) -> URL? {
+        let poor: Set<String> = ["rm", "rmvb", "flv", "avi", "mpg", "mpeg", "vob", "wmv", "asf", "ts"]
+        let ext = url.pathExtension.lowercased()
+        guard poor.contains(ext) else { return nil }
+
+        let out = url.deletingPathExtension().appendingPathExtension("mp4")
+        if FileManager.default.fileExists(atPath: out.path) { return out }
+
+        let alert = NSAlert()
+        alert.messageText = "当前格式不支持精准字幕跳转"
+        alert.informativeText = ".\(ext) 格式的 seek 精度较低，点击字幕可能出现音画不同步。是否将文件重命名为 .mp4？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "重命名为 .mp4")
+        alert.addButton(withTitle: "直接播放")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        do {
+            try FileManager.default.moveItem(at: url, to: out)
+        } catch {
+            return nil
+        }
+        return out
     }
 
     // MARK: - Go Home
