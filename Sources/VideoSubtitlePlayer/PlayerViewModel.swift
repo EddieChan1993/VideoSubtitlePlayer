@@ -91,6 +91,7 @@ class PlayerViewModel: ObservableObject {
 
         videoURL = url
         videoTitle = url.deletingPathExtension().lastPathComponent
+        NSApp.mainWindow?.title = videoTitle
         VideoHistory.shared.record(videoURL: url)
         subtitles = []
         availableTracks = []
@@ -129,16 +130,13 @@ class PlayerViewModel: ObservableObject {
         }
         // 下一个 RunLoop tick 再启动播放，让 SwiftUI 先渲染重置状态（isVideoLoaded=false）
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if let converted = self.offerConvertIfPoorSeek(url: url) {
-                self.playDirectly(url: converted)
-            } else {
-                self.playDirectly(url: url)
-            }
+            self?.playDirectly(url: url)
         }
     }
 
     @Published var isPreparing = false
+    @Published var isConverting = false
+    @Published var convertingStatus = ""
 
     private func playDirectly(url: URL) {
         // Prefer mpv — handles any format natively with no conversion
@@ -400,7 +398,7 @@ class PlayerViewModel: ObservableObject {
     private var currentPlaybackTime: TimeInterval = 0
     /// 上次推送 currentTime 的墙钟时间（节流用，与播放位置无关）
     private var lastTimePublish: CFTimeInterval = 0
-    private func syncCurrentSubtitle(at time: TimeInterval) {
+    func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
 
         // currentTime 节流：约 10fps 更新进度条，避免每帧触发 SwiftUI 全量重绘
@@ -747,28 +745,231 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Format warning
 
     /// Returns the URL to play: renamed .mp4 if user agreed, nil to play original.
-    private func offerConvertIfPoorSeek(url: URL) -> URL? {
-        let poor: Set<String> = ["rm", "rmvb", "flv", "avi", "mpg", "mpeg", "vob", "wmv", "asf", "ts"]
-        let ext = url.pathExtension.lowercased()
-        guard poor.contains(ext) else { return nil }
+    // MARK: - Convert to MKV
 
-        let out = url.deletingPathExtension().appendingPathExtension("mp4")
-        if FileManager.default.fileExists(atPath: out.path) { return out }
+    /// 当前有外挂字幕轨道时才显示转换按钮
+    var canConvertToMKV: Bool {
+        availableTracks.contains { $0.id <= -100 }
+    }
 
-        let alert = NSAlert()
-        alert.messageText = "当前格式不支持精准字幕跳转"
-        alert.informativeText = ".\(ext) 格式的 seek 精度较低，点击字幕可能出现音画不同步。是否将文件重命名为 .mp4？"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "重命名为 .mp4")
-        alert.addButton(withTitle: "直接播放")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    func convertToMKV() {
+        guard let videoURL,
+              let ffmpeg = SubtitleExtractor.ffmpegPath else { return }
 
-        do {
-            try FileManager.default.moveItem(at: url, to: out)
-        } catch {
-            return nil
+        let extTrackIds = availableTracks.filter { $0.id <= -100 }.map { $0.id }
+        let subURLs = extTrackIds.compactMap { externalTrackURLs[$0] }
+        guard !subURLs.isEmpty else { return }
+
+        // 确认弹窗
+        let confirm = NSAlert()
+        confirm.messageText = "转换为内嵌字幕 MKV"
+        confirm.informativeText = "将当前视频和外挂字幕合并为一个 MKV 文件，字幕将内嵌其中，播放更流畅精准。"
+        confirm.alertStyle = .informational
+        confirm.addButton(withTitle: "是，开始转换")
+        confirm.addButton(withTitle: "否，取消")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        // 输出路径：同目录，同名，.mkv 后缀；若与原文件同名则加 _embedded
+        var outURL = videoURL.deletingPathExtension().appendingPathExtension("mkv")
+        if outURL.path == videoURL.path {
+            outURL = videoURL.deletingPathExtension()
+                .appendingPathExtension("embedded")
+                .appendingPathExtension("mkv")
         }
-        return out
+
+        isConverting = true
+        convertingStatus = "正在转换为 MKV…"
+
+        let finalOutURL = outURL
+        Task.detached { [weak self] in
+            guard let self else { return }
+
+            func run(_ args: [String]) -> (Bool, String) {
+                let pipe = Pipe()
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: ffmpeg)
+                proc.arguments = args
+                proc.standardInput  = FileHandle.nullDevice
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError  = pipe
+                do {
+                    try proc.run()
+                } catch {
+                    return (false, "ffmpeg 启动失败：\(error.localizedDescription)")
+                }
+                // 后台读取避免 pipe buffer 满导致死锁
+                var errData = Data()
+                let g = DispatchGroup()
+                g.enter()
+                DispatchQueue.global().async {
+                    errData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    g.leave()
+                }
+                proc.waitUntilExit()
+                g.wait()
+                let errMsg = String(data: errData, encoding: .utf8) ?? String(data: errData, encoding: .isoLatin1) ?? ""
+                print("[run] status=\(proc.terminationStatus) errBytes=\(errData.count)")
+                return (proc.terminationStatus == 0, errMsg)
+            }
+
+            // 将字幕文件标准化为 ffmpeg 可接受的格式：
+            // 1. GBK/BOM → UTF-8  2. 统一 \n 行尾  3. 规范化时间戳格式并删除零时长条目
+            var tempSubFiles: [URL] = []
+
+            func padSRTTime(_ t: String) -> String {
+                let colonParts = t.components(separatedBy: ":")
+                guard colonParts.count == 3 else { return t }
+                let h = String(format: "%02d", Int(colonParts[0]) ?? 0)
+                let m = String(format: "%02d", Int(colonParts[1]) ?? 0)
+                let msParts = colonParts[2].components(separatedBy: ",")
+                guard msParts.count == 2 else { return t }
+                let s = String(format: "%02d", Int(msParts[0]) ?? 0)
+                return "\(h):\(m):\(s),\(msParts[1])"
+            }
+
+            // 将"English text. 中文文字。"拆成两行，让 mergeBilingual 行级去重正确剥离英文
+            func splitMixedLine(_ line: String) -> [String] {
+                var splitIdx: String.Index? = nil
+                for idx in line.indices {
+                    let scalar = line[idx].unicodeScalars.first!.value
+                    if scalar >= 0x4E00 && scalar <= 0x9FFF { splitIdx = idx; break }
+                }
+                guard let idx = splitIdx else { return [line] }
+                let before = String(line[..<idx]).trimmingCharacters(in: .whitespaces)
+                let after  = String(line[idx...]).trimmingCharacters(in: .whitespaces)
+                guard !before.isEmpty, !after.isEmpty else { return [line] }
+                return [before, after]
+            }
+
+            func normalizeSRT(_ raw: String) -> String {
+                var out = ""
+                var idx = 1
+                // 按空行切块，兼容多余空行
+                let blocks = raw.components(separatedBy: "\n\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                for block in blocks {
+                    let lines = block.components(separatedBy: "\n")
+                    guard let tsLineIdx = lines.firstIndex(where: { $0.contains("-->") })
+                    else { continue }
+                    // 规范化时间戳
+                    let rawTS = lines[tsLineIdx]
+                        .replacingOccurrences(of: "-->", with: " --> ")
+                        .replacingOccurrences(of: "  --> ", with: " --> ")
+                    let tsParts = rawTS.components(separatedBy: " --> ")
+                    guard tsParts.count == 2 else { continue }
+                    let start = padSRTTime(tsParts[0].trimmingCharacters(in: .whitespaces))
+                    let end   = padSRTTime(tsParts[1].trimmingCharacters(in: .whitespaces))
+                    // 零时长条目（start==end）略过：ffmpeg 无法处理会导致合并相邻条目
+                    if start == end { continue }
+                    let textLines = lines[(tsLineIdx + 1)...]
+                        .filter { !$0.isEmpty }
+                        .flatMap { splitMixedLine($0) }   // 英中同行 → 拆成两行
+                    guard !textLines.isEmpty else { continue }
+                    out += "\(idx)\n\(start) --> \(end)\n\(textLines.joined(separator: "\n"))\n\n"
+                    idx += 1
+                }
+                return out
+            }
+
+            func prepareSubtitle(_ url: URL) -> String {
+                guard let data = try? Data(contentsOf: url) else { return "file:\(url.path)" }
+                let gbkEnc = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+                    CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+                var str: String
+                if var s = String(data: data, encoding: .utf8) {
+                    if s.hasPrefix("\u{FEFF}") { s = String(s.dropFirst()) }
+                    str = s
+                } else if var s = String(data: data, encoding: gbkEnc) {
+                    if s.hasPrefix("\u{FEFF}") { s = String(s.dropFirst()) }
+                    str = s
+                } else {
+                    return "file:\(url.path)"
+                }
+                str = str.replacingOccurrences(of: "\r\n", with: "\n")
+                         .replacingOccurrences(of: "\r", with: "\n")
+                str = normalizeSRT(str)
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".srt")
+                guard (try? str.write(to: tmp, atomically: true, encoding: .utf8)) != nil else {
+                    return "file:\(url.path)"
+                }
+                tempSubFiles.append(tmp)
+                print("[sub] \(url.lastPathComponent) → 标准化 UTF-8 临时文件")
+                return tmp.path
+            }
+            let preparedSubPaths = subURLs.map { prepareSubtitle($0) }
+
+            // 构建 ffmpeg 输入和 map 参数：input 0 = 视频，input 1..N = 字幕
+            // 视频路径用 file: 前缀处理 [ ] 等特殊字符；字幕已为临时文件，直接用绝对路径
+            func buildArgs(videoCodec: String, audioCodec: String) -> [String] {
+                var args = ["-y", "-i", "file:\(videoURL.path)"]
+                for path in preparedSubPaths { args += ["-i", path] }
+                args += ["-map", "0"]
+                for i in 1...preparedSubPaths.count { args += ["-map", "\(i):0"] }
+                args += ["-c:v", videoCodec, "-c:a", audioCodec, "-c:s", "srt", "file:\(finalOutURL.path)"]
+                return args
+            }
+
+            // 第一步：尝试直接封装（不重编码，速度快）
+            let copyArgs = buildArgs(videoCodec: "copy", audioCodec: "copy")
+            print("[ffmpeg] \(ffmpeg) \(copyArgs.joined(separator: " "))")
+            let (copySuccess, copyErr) = run(copyArgs)
+            print("[ffmpeg] copy 结束，success=\(copySuccess)\n--- err tail ---\n\(copyErr.suffix(800))\n---")
+
+            // 第一步失败（如 rv30 等编码不兼容 MKV）→ 询问是否重新编码
+            let finalSuccess: Bool
+            if copySuccess {
+                finalSuccess = true
+            } else {
+                let reencode: Bool = await MainActor.run {
+                    let ask = NSAlert()
+                    ask.messageText = "直接封装失败"
+                    ask.informativeText = "当前视频编码不兼容 MKV 容器，需要重新编码（H.264 + AAC）。\n重新编码耗时较长，是否继续？"
+                    ask.alertStyle = .warning
+                    ask.addButton(withTitle: "重新编码")
+                    ask.addButton(withTitle: "取消")
+                    return ask.runModal() == .alertFirstButtonReturn
+                }
+                if reencode {
+                    await MainActor.run { self.convertingStatus = "正在重新编码，请耐心等待…" }
+                    print("[ffmpeg] 开始重新编码 libx264…")
+                    let (reSuccess, reErr) = run(buildArgs(videoCodec: "libx264", audioCodec: "aac"))
+                    print("[ffmpeg] 重新编码结束，success=\(reSuccess)\n--- err tail ---\n\(reErr.suffix(800))\n---")
+                    if !reSuccess {
+                        await MainActor.run {
+                            let err = NSAlert()
+                            err.messageText = "重新编码失败"
+                            err.informativeText = reErr.suffix(300).description
+                            err.alertStyle = .warning
+                            err.runModal()
+                        }
+                    }
+                    finalSuccess = reSuccess
+                } else {
+                    finalSuccess = false
+                }
+            }
+
+            tempSubFiles.forEach { try? FileManager.default.removeItem(at: $0) }
+
+            await MainActor.run {
+                self.isConverting = false
+                self.convertingStatus = ""
+
+                if finalSuccess {
+                    let done = NSAlert()
+                    done.messageText = "转换完成"
+                    done.informativeText = "已生成：\(finalOutURL.path)\n\n是否切换到新视频继续播放？"
+                    done.alertStyle = .informational
+                    done.addButton(withTitle: "切换到新视频")
+                    done.addButton(withTitle: "继续使用原视频")
+                    if done.runModal() == .alertFirstButtonReturn {
+                        self.loadVideo(url: finalOutURL)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Go Home

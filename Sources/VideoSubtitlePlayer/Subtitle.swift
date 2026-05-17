@@ -8,10 +8,11 @@ struct Subtitle: Identifiable, Equatable {
 
     var cleanText: String {
         var s = text
-        // Strip HTML tags
         s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        // Strip ASS override codes {…}
         s = s.replacingOccurrences(of: "\\{[^}]*\\}", with: "", options: .regularExpression)
+        // ASS line-break codes that ffmpeg may preserve literally in SRT output
+        s = s.replacingOccurrences(of: "\\N", with: "\n")
+        s = s.replacingOccurrences(of: "\\n", with: "\n")
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

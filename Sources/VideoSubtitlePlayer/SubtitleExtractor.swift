@@ -189,6 +189,17 @@ enum SubtitleExtractor {
     // MARK: - Bilingual merge
 
     static func mergeBilingual(_ primary: [Subtitle], _ secondary: [Subtitle]) -> [Subtitle] {
+        // If primary already has multi-line entries mixing CJK and Latin, it's already bilingual
+        let alreadyBilingual = primary.prefix(5).filter { sub -> Bool in
+            let lines = sub.cleanText.components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            guard lines.count >= 2 else { return false }
+            let hasCJK = lines.contains { line in line.unicodeScalars.contains { $0.value >= 0x4E00 && $0.value <= 0x9FFF } }
+            let hasLatin = lines.contains { line in line.unicodeScalars.filter { $0.value >= 65 && $0.value <= 90 || $0.value >= 97 && $0.value <= 122 }.count >= 4 }
+            return hasCJK && hasLatin
+        }.count >= 2
+        if alreadyBilingual { return primary }
+
         var result: [Subtitle] = []
         var used = Set<Int>()
         for sub in primary {
@@ -197,8 +208,12 @@ enum SubtitleExtractor {
             matches.forEach { used.insert($0.offset) }
 
             let text: String
+            let mergedStart: TimeInterval
+            let mergedEnd: TimeInterval
             if matches.isEmpty {
                 text = sub.text
+                mergedStart = sub.startTime
+                mergedEnd   = sub.endTime
             } else {
                 // Deduplicate by line: only append secondary lines not already in primary.
                 // Handles the common case where one track already stores "English\nChinese"
@@ -218,11 +233,12 @@ enum SubtitleExtractor {
                 text = newLines.isEmpty
                     ? sub.cleanText
                     : sub.cleanText + "\n" + newLines.joined(separator: "\n")
+                // Use the earliest start and latest end across all matched entries so the
+                // merged subtitle stays visible for the full duration of both tracks.
+                mergedStart = matches.reduce(sub.startTime) { min($0, $1.element.startTime) }
+                mergedEnd   = matches.reduce(sub.endTime)   { max($0, $1.element.endTime) }
             }
-            result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: text))
-        }
-        for (j, sec) in secondary.enumerated() where !used.contains(j) {
-            result.append(Subtitle(id: result.count, startTime: sec.startTime, endTime: sec.endTime, text: sec.text))
+            result.append(Subtitle(id: result.count, startTime: mergedStart, endTime: mergedEnd, text: text))
         }
         let sorted = result.sorted { $0.startTime < $1.startTime }
         return sorted.enumerated().map { Subtitle(id: $0, startTime: $1.startTime, endTime: $1.endTime, text: $1.text) }
