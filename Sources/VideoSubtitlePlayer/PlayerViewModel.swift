@@ -400,12 +400,6 @@ class PlayerViewModel: ObservableObject {
     private var currentPlaybackTime: TimeInterval = 0
     /// 上次推送 currentTime 的墙钟时间（节流用，与播放位置无关）
     private var lastTimePublish: CFTimeInterval = 0
-    /// jumpToSubtitle 后强制持有的目标字幕。
-    /// seekExact(startTime) 落帧 PTS 可能略小于 startTime（< 1帧，≤42ms），
-    /// 持有期间 syncCurrentSubtitle 直接使用此索引；
-    /// 视频自然播过 endTime 后释放；用户拖动进度条时由 seek(to:) 清除。
-    private var forcedSubtitleAfterSeek: Subtitle? = nil
-
     private func syncCurrentSubtitle(at time: TimeInterval) {
         currentPlaybackTime = time
 
@@ -417,18 +411,6 @@ class PlayerViewModel: ObservableObject {
         }
         if !useMPV, let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 {
             videoDuration = dur
-        }
-
-        // 字幕导航后的强制持有：保证落帧时字幕正确显示
-        if let forced = forcedSubtitleAfterSeek {
-            if time >= forced.endTime {
-                forcedSubtitleAfterSeek = nil   // 自然播过，恢复正常匹配
-            } else {
-                let idx = forced.id
-                if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
-                if idx != sidebarHighlightIndex { sidebarHighlightIndex = idx }
-                return
-            }
         }
 
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
@@ -446,7 +428,6 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Navigation
 
     func seek(to time: Double) {
-        forcedSubtitleAfterSeek = nil
         // 立即更新 UI，不等 MPV 的 onTimeUpdate 回调，防止进度条松手后视觉弹回
         currentTime = time
         lastTimePublish = CACurrentMediaTime()
@@ -531,7 +512,12 @@ class PlayerViewModel: ObservableObject {
 
     func jumpToFirstSubtitle() {
         guard let first = subtitles.first else { return }
-        jumpToSubtitle(first)
+        // 00:00 字幕通常是广告，跳过它直接取下一条
+        if first.startTime == 0, subtitles.count > 1 {
+            jumpToSubtitle(subtitles[1])
+        } else {
+            jumpToSubtitle(first)
+        }
     }
 
     func jumpToLastSubtitle() {
