@@ -54,9 +54,6 @@ class PlayerViewModel: ObservableObject {
     private var nextExternalTrackId = -100
     private var extractionTask: Task<Void, Never>?
 
-    /// seek 目标字幕 id：idx 到达目标前屏蔽 sidebarHighlightIndex 自动更新，防止 seek 过渡帧闪跳。
-    /// 用 id 而非时间判断，可应对双语轨相邻字幕时间重叠导致 firstIndex 仍命中上一条的情况。
-    private var seekTargetSubtitleId: Int? = nil
 
 
     init() {
@@ -419,15 +416,6 @@ class PlayerViewModel: ObservableObject {
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
 
-        // seek 过渡期内屏蔽 sidebarHighlightIndex 更新，防止经过上一条字幕时闪跳
-        // 用精确匹配 idx == targetId，避免倒退 seek 时 MPV 短暂报高 idx 提前解锁
-        if let targetId = seekTargetSubtitleId {
-            let arrived = (idx == targetId)
-            let overdue = targetId < subtitles.count && time >= subtitles[targetId].startTime + 0.5
-            if arrived || overdue { seekTargetSubtitleId = nil }
-            else { return }
-        }
-
         // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
         // This keeps the sidebar showing the last seen entry highlighted.
         if idx >= 0, idx != sidebarHighlightIndex { sidebarHighlightIndex = idx }
@@ -468,7 +456,6 @@ class PlayerViewModel: ObservableObject {
     /// exact=false: absolute+keyframes（跳最近关键帧，用于 A/D 快速导航，不堆积队列）
     func jumpToSubtitle(_ subtitle: Subtitle, exact: Bool = true) {
         sidebarHighlightIndex = subtitle.id
-        seekTargetSubtitleId = subtitle.id
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {

@@ -134,7 +134,7 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 ZStack {
                     if vm.useMPV, let mpv = vm.mpvController {
-                        MPVPlayerView(controller: mpv, onFrameReady: vm.syncCurrentSubtitle)
+                        MPVPlayerView(controller: mpv)
                     } else {
                         VideoPlayerView(player: vm.player)
                     }
