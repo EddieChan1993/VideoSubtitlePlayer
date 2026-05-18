@@ -311,12 +311,78 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复 3** | 移除 `mergeBilingual()` 末尾追加未匹配次轨条目的逻辑 |
 | **文件** | `Subtitle.swift` — `cleanText`；`SubtitleExtractor.swift` — `mergeBilingual()` |
 
-### Bug 17 — 字幕跳转后视频慢于音频并加速追赶
+### Bug 17 — 内嵌字幕转换（convertToMKV）实现中遇到的问题
+
+#### 17-A — ffmpeg 子进程 stderr 读取死锁
+| | |
+|---|---|
+| **现象** | 调用 `proc.waitUntilExit()` 后进程永不退出，程序挂死 |
+| **根本原因** | ffmpeg 输出量超过 pipe buffer（约 64 KB）时写端阻塞，但主线程在等 `waitUntilExit`，读端没人消费，双方互等死锁 |
+| **修复** | 用 `DispatchGroup` + `DispatchQueue.global().async` 在后台线程消费 `readDataToEndOfFile()`，再 `waitUntilExit()`，保证 pipe 不满 |
+| **文件** | `PlayerViewModel.swift` — `convertToMKV()` 内 `run(_:)` 函数 |
+
+#### 17-B — 文件路径含 `[` `]` 特殊字符时 ffmpeg 报错
+| | |
+|---|---|
+| **现象** | 视频文件名含 `[xxx]` 时，ffmpeg 报 `No such file or directory` |
+| **根本原因** | ffmpeg 默认把 `[...]` 解析为 glob 模式，导致路径匹配失败 |
+| **修复** | 所有传给 ffmpeg 的路径改用 `file:` 前缀（`"file:\(url.path)"`），强制按字面路径解析 |
+| **文件** | `PlayerViewModel.swift` — `buildArgs(videoCodec:audioCodec:)` |
+
+#### 17-C — 零时长字幕条目导致合并后字幕错位
+| | |
+|---|---|
+| **现象** | 转换后的 MKV 字幕出现多条合并在一起或时间轴偏移 |
+| **根本原因** | 原始 SRT 中存在 `start == end` 的零时长条目，ffmpeg 无法处理，会与相邻条目合并，打乱后续所有序号 |
+| **修复** | `normalizeSRT()` 中跳过 `start == end` 的块，不写入标准化后的临时文件 |
+| **文件** | `PlayerViewModel.swift` — `normalizeSRT(_:)` |
+
+#### 17-D — GBK 编码字幕 / UTF-8 BOM 导致 ffmpeg 乱码
+| | |
+|---|---|
+| **现象** | 内嵌后字幕显示乱码，或 ffmpeg 报编码错误 |
+| **根本原因** | 国内常见字幕文件为 GBK 编码或带 UTF-8 BOM；ffmpeg 期望纯 UTF-8 无 BOM |
+| **修复** | `prepareSubtitle(_:)` 依次尝试 UTF-8 → GB18030 解码，剥除 BOM，再统一输出为 UTF-8 临时文件交给 ffmpeg |
+| **文件** | `PlayerViewModel.swift` — `prepareSubtitle(_:)` |
+
+#### 17-E — SRT 时间戳格式不规范导致 ffmpeg 解析失败
+| | |
+|---|---|
+| **现象** | 部分字幕文件封装后字幕为空 |
+| **根本原因** | 一些 SRT 文件时间戳缺少前导零（如 `1:2:3,4` 而非 `01:02:03,004`），或 `-->` 前后无空格，ffmpeg 严格解析时跳过这些条目 |
+| **修复** | `padSRTTime(_:)` 补齐两位小时/分/秒；`normalizeSRT()` 规范化 `-->` 前后空格 |
+| **文件** | `PlayerViewModel.swift` — `padSRTTime(_:)`、`normalizeSRT(_:)` |
+
+#### 17-F — 英中混排在同一行时双语去重失效
+| | |
+|---|---|
+| **现象** | 内嵌后切换双语模式仍有英文重复 |
+| **根本原因** | 部分字幕文件将英文和中文写在同一行（`English text. 中文文字。`），`mergeBilingual` 行级去重以 `\n` 分割，拿到的是整行，无法与英文轨的单行匹配 |
+| **修复** | `splitMixedLine(_:)` 找到第一个 CJK 字符位置，将「英文前缀」和「中文后缀」拆成两行，再写入临时 SRT |
+| **文件** | `PlayerViewModel.swift` — `splitMixedLine(_:)` |
+
+#### 17-G — 特定视频编码（rv30 等）不兼容 MKV 容器
+| | |
+|---|---|
+| **现象** | 封装失败，ffmpeg 报 `Not yet implemented in FFmpeg` |
+| **根本原因** | RealMedia `rv30`/`rv40` 等编码器无法直接复制进 MKV，必须重新编码 |
+| **修复** | 两步策略：先以 `-c:v copy -c:a copy` 尝试直接封装；失败后弹窗询问用户，确认后改用 `-c:v libx264 -c:a aac` 重新编码 |
+| **文件** | `PlayerViewModel.swift` — `convertToMKV()` 主流程 |
+
+#### 17-H — 转换进度无法感知
+| | |
+|---|---|
+| **现象** | 转换期间 UI 无进度反馈，用户不知道是否在处理 |
+| **根本原因** | ffmpeg 默认进度输出夹杂大量日志，难以解析 |
+| **修复** | 使用 `-progress pipe:2 -loglevel quiet`，ffmpeg 将结构化进度（`out_time=HH:MM:SS.ffffff`）单独写入 stderr，解析 `out_time` / 总时长得到百分比，通过 `convertingStatus` 更新 UI overlay |
+| **文件** | `VideoConverter.swift` — `parseProgressTime(_:)`；`PlayerViewModel.swift` — `convertingStatus` |
+
+### Bug 18 — 字幕跳转后视频慢于音频并加速追赶
 | | |
 |---|---|
 | **现象** | 点击字幕跳转后，视频定位到目标位置，但播放约 1 秒内画面明显落后于音频，随后加速赶上；在正常 MP4 视频上不复现 |
 | **根本原因** | 视频源为外挂字幕格式，但英文轨道字幕与双语轨道字幕的时间戳存在偏差（非内嵌字幕）；将视频转为内嵌字幕格式（ffmpeg `-c:s copy` 封装）后，时间戳对齐，seek 精度恢复正常 |
-| **修复** | 通过 ffmpeg 将外挂字幕内嵌到视频容器（生成新 MKV/MP4），使所有轨道时间基准一致，消除跳转后音画追赶现象 |
+| **修复** | 通过 ffmpeg 将外挂字幕内嵌到视频容器（生成新 MKV/MP4），使所有轨道共享同一时间基准，消除跳转后音画追赶现象 |
 | **文件** | `VideoConverter.swift` — 封装转换流程 |
 
 ---
@@ -342,3 +408,7 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 17. **拖入与手动选择路径必须对齐**：`onDrop` 回调是独立入口，不会复用文件选择面板的逻辑。凡是手动选择支持的文件类型（如字幕），拖入处理函数也必须显式判断扩展名并路由到相同处理函数，否则两条路径行为不一致。
 18. **ASS 换行符在 SRT 中的残留**：ffmpeg 将 ASS 字幕转换为 SRT 时，`\N`（硬换行）和 `\n`（软换行）可能以字面量字符串保留，而非转换为真正的换行符。任何对字幕文本做行级处理的逻辑（去重、显示、分割）都必须先将 `\N`/`\n` 转为真换行，否则多语言轨道合并会失效。
 19. **外挂字幕 vs 内嵌字幕的 seek 精度**：外挂字幕文件（`.srt`/`.ass`）与视频本身使用独立的时间基准，英文轨和双语轨之间可能存在时间偏差，导致跳转后音画不同步（视频落后并加速追赶）。通过 ffmpeg 将字幕内嵌到容器，使所有轨道共享同一时间基准，可彻底消除此问题。
+20. **ffmpeg 子进程 stderr 必须在后台异步消费**：`proc.waitUntilExit()` 前若未先消费 stderr pipe，输出量超过 pipe buffer（~64 KB）时写端阻塞，与 `waitUntilExit` 形成死锁。解决方案：用 `DispatchQueue.global().async` + `DispatchGroup` 在后台读完 stderr，再 wait。
+21. **ffmpeg 路径中的特殊字符需 `file:` 前缀**：ffmpeg 对含 `[` `]` 的路径默认做 glob 解析，导致"No such file or directory"。在所有输入/输出路径前加 `file:` 前缀可强制字面量解析，与 URL encoding 无关。
+22. **SRT 预处理是 ffmpeg 封装成功的前提**：字幕直接传给 ffmpeg 前需做四步标准化：① GBK/BOM → UTF-8；② `\r\n` / `\r` → `\n`；③ 时间戳补齐两位及规范 `-->` 空格；④ 跳过零时长条目（`start == end`）。任何一步缺失都可能导致封装后字幕为空或乱序。
+23. **ffmpeg 进度解析用 `-progress pipe:2 -loglevel quiet`**：`-progress` 将结构化进度（`out_time=HH:MM:SS.ffffff` 等）写入指定 fd，与普通日志分离。结合总时长计算百分比，比解析 stderr 的 `frame=` 行更可靠。
