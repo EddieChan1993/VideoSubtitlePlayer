@@ -240,7 +240,14 @@ enum SubtitleExtractor {
             }
             result.append(Subtitle(id: result.count, startTime: mergedStart, endTime: mergedEnd, text: text))
         }
-        let sorted = result.sorted { $0.startTime < $1.startTime }
+        var sorted = result.sorted { $0.startTime < $1.startTime }
+        // 消除相邻条目时间重叠：endTime 不得超过下一条的 startTime
+        for i in 0..<sorted.count - 1 {
+            if sorted[i].endTime > sorted[i + 1].startTime {
+                sorted[i] = Subtitle(id: sorted[i].id, startTime: sorted[i].startTime,
+                                     endTime: sorted[i + 1].startTime, text: sorted[i].text)
+            }
+        }
         return sorted.enumerated().map { Subtitle(id: $0, startTime: $1.startTime, endTime: $1.endTime, text: $1.text) }
     }
 
