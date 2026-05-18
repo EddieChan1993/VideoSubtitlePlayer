@@ -438,23 +438,27 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    func jumpToSubtitle(_ subtitle: Subtitle) {
+    /// exact=true（默认）: absolute+exact，精确到帧，用于单次按键 / 侧边栏点击
+    /// exact=false: absolute+keyframes，跳最近关键帧，用于持续按住 A/D，避免 seek 命令堆积
+    func jumpToSubtitle(_ subtitle: Subtitle, exact: Bool = true) {
         sidebarHighlightIndex = subtitle.id
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
             if !isPlaying { mpv.setPlaying(true); isPlaying = true }
-            mpv.seekExact(to: subtitle.startTime)
+            if exact { mpv.seekExact(to: subtitle.startTime) }
+            else      { mpv.seek(to: subtitle.startTime) }
         } else {
+            let tol: CMTime = exact ? .zero : CMTime(seconds: 0.5, preferredTimescale: 600)
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
-            player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) { [weak self] _ in
                 self?.player.play()
                 self?.isPlaying = true
             }
         }
     }
 
-    func previousSubtitle() {
+    func previousSubtitle(exact: Bool = true) {
         guard !subtitles.isEmpty else { return }
         let target: Int
         if currentSubtitleIndex > 0 {
@@ -465,7 +469,7 @@ class PlayerViewModel: ObservableObject {
             let locked = sidebarHighlightIndex
             target = locked > 0 ? locked - 1 : 0
         }
-        jumpToSubtitle(subtitles[target])
+        jumpToSubtitle(subtitles[target], exact: exact)
     }
 
     func restartCurrentSubtitle() {
@@ -479,14 +483,14 @@ class PlayerViewModel: ObservableObject {
         jumpToSubtitle(subtitles[idx])
     }
 
-    func nextSubtitle() {
+    func nextSubtitle(exact: Bool = true) {
         guard !subtitles.isEmpty else { return }
         if currentSubtitleIndex >= 0 {
             let next = currentSubtitleIndex + 1
-            if next < subtitles.count { jumpToSubtitle(subtitles[next]) }
+            if next < subtitles.count { jumpToSubtitle(subtitles[next], exact: exact) }
         } else {
             if let target = subtitles.firstIndex(where: { $0.startTime > now }) {
-                jumpToSubtitle(subtitles[target])
+                jumpToSubtitle(subtitles[target], exact: exact)
             }
         }
     }
