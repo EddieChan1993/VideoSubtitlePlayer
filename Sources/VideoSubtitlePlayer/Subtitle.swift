@@ -13,26 +13,29 @@ struct Subtitle: Identifiable, Equatable {
         // ASS line-break codes that ffmpeg may preserve literally in SRT output
         s = s.replacingOccurrences(of: "\\N", with: "\n")
         s = s.replacingOccurrences(of: "\\n", with: "\n")
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 同行英中拆分："English. 中文。" → "English.\n中文。"
+        s = s.components(separatedBy: "\n").map(Self.splitLatinCJK).joined(separator: "\n")
+        return s
     }
 
-    /// Splits text into display lines for bilingual rendering.
-    /// Handles both explicit \n (merged tracks) and same-line "English. 中文" format.
-    var bilingualLines: [String] {
-        let t = cleanText
-        if t.contains("\n") {
-            return t.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        }
-        guard let splitIdx = t.firstIndex(where: { c in
-            c.unicodeScalars.contains { $0.value >= 0x4E00 && $0.value <= 0x9FFF }
-        }), splitIdx > t.startIndex else { return [t] }
-        let pre = String(t[..<splitIdx]).trimmingCharacters(in: .whitespaces)
-        let suf = String(t[splitIdx...])
+    /// 在同一行内，从第一个 CJK 字符处插入换行，把英文前缀和中文后缀分开。
+    /// 仅当前缀含 ≥3 个拉丁字母且后缀 ≥2 字时生效，避免误切纯中文或纯英文行。
+    private static func splitLatinCJK(_ line: String) -> String {
+        guard let splitIdx = line.firstIndex(where: { $0.unicodeScalars.contains { $0.value >= 0x4E00 && $0.value <= 0x9FFF } }),
+              splitIdx > line.startIndex else { return line }
+        let pre = String(line[..<splitIdx]).trimmingCharacters(in: .whitespaces)
+        let suf = String(line[splitIdx...])
         let latinCount = pre.unicodeScalars.filter {
             ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122)
         }.count
-        guard latinCount >= 3, suf.count >= 2 else { return [t] }
-        return [pre, suf]
+        guard latinCount >= 3, suf.count >= 2 else { return line }
+        return pre + "\n" + suf
+    }
+
+    /// Splits cleanText into display lines (newline-separated).
+    var bilingualLines: [String] {
+        cleanText.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
     var startTimeString: String { formatTime(startTime) }
