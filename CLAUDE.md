@@ -361,6 +361,14 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | `splitMixedLine(_:)` 找到第一个 CJK 字符位置，将「英文前缀」和「中文后缀」拆成两行，再写入临时 SRT |
 | **文件** | `PlayerViewModel.swift` — `splitMixedLine(_:)` |
 
+#### 17-F2 — 零时长 SRT 条目内嵌后丢失
+| | |
+|---|---|
+| **现象** | 原始外挂字幕中某些条目在转换为 MKV 内嵌字幕后消失，侧边栏比原来少若干条 |
+| **根本原因** | 原始 SRT 文件中存在 `start == end` 的零时长条目（部分工具生成）；`normalizeSRT()` 为避免 ffmpeg 合并相邻条目，对这类条目执行 `continue` 直接跳过，导致内容丢失 |
+| **修复** | 遇到 `start == end` 时，将 `end` 时间戳解析为毫秒后 +2000ms 再重新格式化为 `HH:MM:SS,mmm`，赋予 2 秒合成时长后保留条目，不再丢弃 |
+| **文件** | `PlayerViewModel.swift` — `normalizeSRT(_:)` |
+
 #### 17-G — 特定视频编码（rv30 等）不兼容 MKV 容器
 | | |
 |---|---|
@@ -410,5 +418,5 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 19. **外挂字幕 vs 内嵌字幕的 seek 精度**：外挂字幕文件（`.srt`/`.ass`）与视频本身使用独立的时间基准，英文轨和双语轨之间可能存在时间偏差，导致跳转后音画不同步（视频落后并加速追赶）。通过 ffmpeg 将字幕内嵌到容器，使所有轨道共享同一时间基准，可彻底消除此问题。
 20. **ffmpeg 子进程 stderr 必须在后台异步消费**：`proc.waitUntilExit()` 前若未先消费 stderr pipe，输出量超过 pipe buffer（~64 KB）时写端阻塞，与 `waitUntilExit` 形成死锁。解决方案：用 `DispatchQueue.global().async` + `DispatchGroup` 在后台读完 stderr，再 wait。
 21. **ffmpeg 路径中的特殊字符需 `file:` 前缀**：ffmpeg 对含 `[` `]` 的路径默认做 glob 解析，导致"No such file or directory"。在所有输入/输出路径前加 `file:` 前缀可强制字面量解析，与 URL encoding 无关。
-22. **SRT 预处理是 ffmpeg 封装成功的前提**：字幕直接传给 ffmpeg 前需做四步标准化：① GBK/BOM → UTF-8；② `\r\n` / `\r` → `\n`；③ 时间戳补齐两位及规范 `-->` 空格；④ 跳过零时长条目（`start == end`）。任何一步缺失都可能导致封装后字幕为空或乱序。
+22. **SRT 预处理是 ffmpeg 封装成功的前提**：字幕直接传给 ffmpeg 前需做四步标准化：① GBK/BOM → UTF-8；② `\r\n` / `\r` → `\n`；③ 时间戳补齐两位及规范 `-->` 空格；④ 零时长条目（`start == end`）赋予合成时长而非丢弃，否则内容丢失。任何一步缺失都可能导致封装后字幕为空、乱序或缺失。
 23. **ffmpeg 进度解析用 `-progress pipe:2 -loglevel quiet`**：`-progress` 将结构化进度（`out_time=HH:MM:SS.ffffff` 等）写入指定 fd，与普通日志分离。结合总时长计算百分比，比解析 stderr 的 `frame=` 行更可靠。
