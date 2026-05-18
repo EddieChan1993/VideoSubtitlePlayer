@@ -859,9 +859,20 @@ class PlayerViewModel: ObservableObject {
                     let tsParts = rawTS.components(separatedBy: " --> ")
                     guard tsParts.count == 2 else { continue }
                     let start = padSRTTime(tsParts[0].trimmingCharacters(in: .whitespaces))
-                    let end   = padSRTTime(tsParts[1].trimmingCharacters(in: .whitespaces))
-                    // 零时长条目（start==end）略过：ffmpeg 无法处理会导致合并相邻条目
-                    if start == end { continue }
+                    var end   = padSRTTime(tsParts[1].trimmingCharacters(in: .whitespaces))
+                    // 零时长条目：ffmpeg 无法处理 start==end，赋予 2 秒合成时长而非丢弃
+                    if start == end {
+                        let parts = end.components(separatedBy: CharacterSet(charactersIn: ":,"))
+                        if parts.count == 4,
+                           let h = Int(parts[0]), let m = Int(parts[1]),
+                           let s = Int(parts[2]), let ms = Int(parts[3]) {
+                            var totalMs = (h * 3600 + m * 60 + s) * 1000 + ms + 2000
+                            let newMs = totalMs % 1000; totalMs /= 1000
+                            let newS  = totalMs % 60;  totalMs /= 60
+                            let newM  = totalMs % 60;  totalMs /= 60
+                            end = String(format: "%02d:%02d:%02d,%03d", totalMs, newM, newS, newMs)
+                        }
+                    }
                     let textLines = lines[(tsLineIdx + 1)...]
                         .filter { !$0.isEmpty }
                         .flatMap { splitMixedLine($0) }   // 英中同行 → 拆成两行
