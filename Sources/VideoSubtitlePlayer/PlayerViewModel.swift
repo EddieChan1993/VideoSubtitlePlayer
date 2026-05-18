@@ -54,8 +54,9 @@ class PlayerViewModel: ObservableObject {
     private var nextExternalTrackId = -100
     private var extractionTask: Task<Void, Never>?
 
-    /// seek 目标时间：在抵达此时间前屏蔽 sidebarHighlightIndex 自动更新，防止 seek 过渡帧闪跳
-    private var seekTargetTime: TimeInterval? = nil
+    /// seek 目标字幕 id：idx 到达目标前屏蔽 sidebarHighlightIndex 自动更新，防止 seek 过渡帧闪跳。
+    /// 用 id 而非时间判断，可应对双语轨相邻字幕时间重叠导致 firstIndex 仍命中上一条的情况。
+    private var seekTargetSubtitleId: Int? = nil
 
     init() {
         let interval = CMTime(seconds: 0.08, preferredTimescale: 600)
@@ -418,8 +419,9 @@ class PlayerViewModel: ObservableObject {
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
 
         // seek 过渡期内屏蔽 sidebarHighlightIndex 更新，防止经过上一条字幕时闪跳
-        if let target = seekTargetTime {
-            if time >= target { seekTargetTime = nil }  // 已抵达目标，恢复正常更新
+        // 用 subtitle id 而非时间判断：双语轨相邻字幕可能有时间重叠，纯时间锁无效
+        if let targetId = seekTargetSubtitleId {
+            if idx >= targetId { seekTargetSubtitleId = nil }  // 已抵达目标，恢复正常更新
             else { return }
         }
 
@@ -461,7 +463,7 @@ class PlayerViewModel: ObservableObject {
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
         sidebarHighlightIndex = subtitle.id
-        seekTargetTime = subtitle.startTime   // 屏蔽 seek 过渡帧引起的侧边栏闪跳
+        seekTargetSubtitleId = subtitle.id   // 屏蔽 seek 过渡帧引起的侧边栏闪跳
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
