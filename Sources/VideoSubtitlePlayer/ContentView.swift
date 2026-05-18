@@ -96,9 +96,9 @@ struct ContentView: View {
                 switch event.keyCode {
                 case 13: vm.jumpToFirstSubtitle();    return nil  // W
                 case 14: vm.jumpToLastSubtitle();     return nil  // E
-                case 0:  vm.previousSubtitle(exact: !event.isARepeat); return nil  // A
-                case 1:  vm.restartCurrentSubtitle();               return nil  // S
-                case 2:  vm.nextSubtitle(exact: !event.isARepeat);  return nil  // D
+                case 0:  vm.previousSubtitle();       return nil  // A
+                case 1:  vm.restartCurrentSubtitle(); return nil  // S
+                case 2:  vm.nextSubtitle();           return nil  // D
                 case 8:  vm.copyCurrentSubtitle();    return nil  // C
                 case 12: vm.showSubtitles.toggle();   return nil  // Q
                 case 6:  withAnimation(.easeInOut(duration: 0.2)) { vm.showSidebar.toggle() }; return nil  // Z
@@ -402,13 +402,13 @@ struct NavigationBarView: View {
                           action: vm.jumpToFirstSubtitle)
                 BarButton(icon: "backward.end.fill", help: "上一条字幕 (A)",
                           disabled: vm.sidebarHighlightIndex <= 0 && vm.subtitles.isEmpty,
-                          action: { vm.previousSubtitle() })
+                          action: vm.previousSubtitle)
                 BarButton(icon: "arrow.counterclockwise", help: "回到锁定字幕起点 (S)",
                           disabled: vm.sidebarHighlightIndex < 0,
                           action: vm.restartLockedSubtitle)
                 BarButton(icon: "forward.end.fill", help: "下一条字幕 (D)",
                           disabled: vm.sidebarHighlightIndex >= vm.subtitles.count - 1 || vm.subtitles.isEmpty,
-                          action: { vm.nextSubtitle() })
+                          action: vm.nextSubtitle)
                 BarButton(icon: "forward.end.alt.fill", help: "跳到最后一条字幕 (E)",
                           disabled: vm.subtitles.isEmpty,
                           action: vm.jumpToLastSubtitle)
