@@ -130,22 +130,10 @@ struct SubtitleListView: View {
 
         var options: [TrackOption] = []
 
-        // 内嵌 + 伴随轨道（id > -100）
-        let builtinTracks = tracks.filter { $0.id > -100 }
-        if let primary = builtinTracks.first {
-            options.append(TrackOption(label: vm.trackLabel(for: primary), mode: .single(primary)))
-
-            if builtinTracks.count >= 2 {
-                let cn = builtinTracks.first { $0.isChinese }
-                let en = builtinTracks.first { $0.isEnglish }
-                let (biPrimary, biSecondary): (SubtitleTrack, SubtitleTrack)
-                if let cn, let en { (biPrimary, biSecondary) = (cn, en) }
-                else {
-                    let l0 = vm.trackLabel(for: builtinTracks[0])
-                    (biPrimary, biSecondary) = (l0 == "中文") ? (builtinTracks[0], builtinTracks[1]) : (builtinTracks[1], builtinTracks[0])
-                }
-                options.append(TrackOption(label: "双语", mode: .bilingual(biPrimary, biSecondary)))
-            }
+        // 每条轨道独立显示为一个 chip，标签由语言检测决定
+        // 若某条轨道本身已包含双语内容，检测后会自动显示"双语"标签
+        for track in tracks where track.id > -100 {
+            options.append(TrackOption(label: vm.trackLabel(for: track), mode: .single(track)))
         }
 
         // 手动加载的外挂字幕（id <= -100），每个单独一个 chip，带删除按钮

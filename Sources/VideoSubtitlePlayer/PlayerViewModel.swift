@@ -271,20 +271,6 @@ class PlayerViewModel: ObservableObject {
 
         if needsLoad { await loadSubtitles(for: mode, url: url) }
 
-        // 英文加载完后立即预缓存双语，无需等待
-        if tracksSnapshot.count >= 2 {
-            Task {
-                let biMode = bilingualMode(from: tracksSnapshot)
-                guard biMode != mode else { return }
-                let alreadyCached = await MainActor.run { self.subtitleCache[biMode] != nil }
-                guard !alreadyCached else { return }
-                if case .bilingual(let p, let s) = biMode {
-                    let subs = await SubtitleExtractor.extractBilingual(from: url, primary: p, secondary: s)
-                    await MainActor.run { self.subtitleCache[biMode] = subs }
-                }
-            }
-        }
-
         // 延迟 2 秒再缓存其余单轨，避免与 MPV 初始解码争 CPU
         Task {
             try? await Task.sleep(for: .seconds(2))
@@ -543,18 +529,9 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// Raw order derived from availableTracks (builtin first, then external).
+    /// Raw order derived from availableTracks — each track is its own independent mode.
     private func buildRawModes() -> [SubtitleMode] {
-        let tracks = availableTracks
-        guard !tracks.isEmpty else { return [] }
-        var modes: [SubtitleMode] = []
-        let builtin = tracks.filter { $0.id > -100 }
-        if let primary = builtin.first {
-            modes.append(.single(primary))
-            if builtin.count >= 2 { modes.append(bilingualMode(from: builtin)) }
-        }
-        for track in tracks where track.id <= -100 { modes.append(.single(track)) }
-        return modes
+        return availableTracks.map { .single($0) }
     }
 
     /// Keeps chipOrder in sync with availableTracks (preserves user drag order, appends new, removes deleted).
