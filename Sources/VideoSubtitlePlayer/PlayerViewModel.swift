@@ -452,20 +452,16 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// exact=true: absolute+exact（精确到帧，用于 S 键 / 侧边栏点击）
-    /// exact=false: absolute+keyframes（跳最近关键帧，用于 A/D 快速导航，不堆积队列）
-    func jumpToSubtitle(_ subtitle: Subtitle, exact: Bool = true) {
+    func jumpToSubtitle(_ subtitle: Subtitle) {
         sidebarHighlightIndex = subtitle.id
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
             if !isPlaying { mpv.setPlaying(true); isPlaying = true }
-            if exact { mpv.seekExact(to: subtitle.startTime) }
-            else      { mpv.seek(to: subtitle.startTime) }
+            mpv.seekExact(to: subtitle.startTime)
         } else {
-            let tol: CMTime = exact ? .zero : CMTime(seconds: 0.5, preferredTimescale: 600)
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
-            player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) { [weak self] _ in
+            player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 self?.player.play()
                 self?.isPlaying = true
             }
@@ -474,11 +470,16 @@ class PlayerViewModel: ObservableObject {
 
     func previousSubtitle() {
         guard !subtitles.isEmpty else { return }
-        // sidebarHighlightIndex 受锁保护，不会被 seek 过渡帧污染，用它做基准最可靠
-        let base = sidebarHighlightIndex >= 0 ? sidebarHighlightIndex
-                 : (currentSubtitleIndex >= 0 ? currentSubtitleIndex : 0)
-        let target = base > 0 ? base - 1 : 0
-        jumpToSubtitle(subtitles[target], exact: false)
+        let target: Int
+        if currentSubtitleIndex > 0 {
+            target = currentSubtitleIndex - 1
+        } else if currentSubtitleIndex == 0 {
+            target = 0
+        } else {
+            let locked = sidebarHighlightIndex
+            target = locked > 0 ? locked - 1 : 0
+        }
+        jumpToSubtitle(subtitles[target])
     }
 
     func restartCurrentSubtitle() {
@@ -494,17 +495,12 @@ class PlayerViewModel: ObservableObject {
 
     func nextSubtitle() {
         guard !subtitles.isEmpty else { return }
-        // sidebarHighlightIndex 受锁保护，不会被 seek 过渡帧污染，用它做基准最可靠
-        if sidebarHighlightIndex >= 0 {
-            let next = sidebarHighlightIndex + 1
-            if next < subtitles.count { jumpToSubtitle(subtitles[next], exact: false) }
-        } else if currentSubtitleIndex >= 0 {
+        if currentSubtitleIndex >= 0 {
             let next = currentSubtitleIndex + 1
-            if next < subtitles.count { jumpToSubtitle(subtitles[next], exact: false) }
+            if next < subtitles.count { jumpToSubtitle(subtitles[next]) }
         } else {
-            // 字幕间隙：跳到当前时间之后开始的第一条字幕
             if let target = subtitles.firstIndex(where: { $0.startTime > now }) {
-                jumpToSubtitle(subtitles[target], exact: false)
+                jumpToSubtitle(subtitles[target])
             }
         }
     }
