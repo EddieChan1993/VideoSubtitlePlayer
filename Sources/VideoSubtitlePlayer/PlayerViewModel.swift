@@ -58,6 +58,9 @@ class PlayerViewModel: ObservableObject {
     /// 用 id 而非时间判断，可应对双语轨相邻字幕时间重叠导致 firstIndex 仍命中上一条的情况。
     private var seekTargetSubtitleId: Int? = nil
 
+    /// 防抖 seek：A/D 快速连按时只发最后一次 seekExact，视觉状态立刻更新
+    private var pendingSeekWork: DispatchWorkItem? = nil
+
     init() {
         let interval = CMTime(seconds: 0.08, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
@@ -461,19 +464,37 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    func jumpToSubtitle(_ subtitle: Subtitle) {
+    /// debounce: true 用于 A/D 快速连按，视觉立刻更新，实际 seek 防抖 80ms 只发最后一次
+    func jumpToSubtitle(_ subtitle: Subtitle, debounce: Bool = false) {
+        // 视觉状态立刻更新
         sidebarHighlightIndex = subtitle.id
         seekTargetSubtitleId = subtitle.id   // 屏蔽 seek 过渡帧引起的侧边栏闪跳
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
-        if let mpv = mpvController {
-            if !isPlaying {
-                mpv.setPlaying(true)
-                isPlaying = true
-            }
-            mpv.seekExact(to: subtitle.startTime)
+
+        // 取消上一个待发的 seek（防抖核心）
+        pendingSeekWork?.cancel()
+        pendingSeekWork = nil
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.performSeek(to: subtitle.startTime)
+        }
+        pendingSeekWork = work
+
+        if debounce {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
         } else {
-            let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
+            work.perform()
+        }
+    }
+
+    private func performSeek(to time: TimeInterval) {
+        if let mpv = mpvController {
+            if !isPlaying { mpv.setPlaying(true); isPlaying = true }
+            mpv.seekExact(to: time)
+        } else {
+            let t = CMTime(seconds: time, preferredTimescale: 600)
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 self?.player.play()
                 self?.isPlaying = true
@@ -483,17 +504,10 @@ class PlayerViewModel: ObservableObject {
 
     func previousSubtitle() {
         guard !subtitles.isEmpty else { return }
-        let target: Int
-        if currentSubtitleIndex > 0 {
-            target = currentSubtitleIndex - 1
-        } else if currentSubtitleIndex == 0 {
-            target = 0
-        } else {
-            // 字幕间隙：sidebarHighlightIndex 指向刚结束的那条，上一条是它的前一条
-            let locked = sidebarHighlightIndex
-            target = locked > 0 ? locked - 1 : 0
-        }
-        jumpToSubtitle(subtitles[target])
+        // seek 过渡中以锁定目标 id 为基准，避免从过渡帧的 currentSubtitleIndex 跳错
+        let base = seekTargetSubtitleId ?? (currentSubtitleIndex >= 0 ? currentSubtitleIndex : sidebarHighlightIndex)
+        let target = base > 0 ? base - 1 : 0
+        jumpToSubtitle(subtitles[target], debounce: true)
     }
 
     func restartCurrentSubtitle() {
@@ -509,14 +523,14 @@ class PlayerViewModel: ObservableObject {
 
     func nextSubtitle() {
         guard !subtitles.isEmpty else { return }
-        if currentSubtitleIndex >= 0 {
-            // 正在某条字幕上：跳到下一条
-            let next = currentSubtitleIndex + 1
-            if next < subtitles.count { jumpToSubtitle(subtitles[next]) }
+        // seek 过渡中以锁定目标 id 为基准，避免从过渡帧的 currentSubtitleIndex 跳错
+        if let base = seekTargetSubtitleId ?? (currentSubtitleIndex >= 0 ? currentSubtitleIndex : nil) {
+            let next = base + 1
+            if next < subtitles.count { jumpToSubtitle(subtitles[next], debounce: true) }
         } else {
             // 字幕间隙：跳到当前时间之后开始的第一条字幕
             if let target = subtitles.firstIndex(where: { $0.startTime > now }) {
-                jumpToSubtitle(subtitles[target])
+                jumpToSubtitle(subtitles[target], debounce: true)
             }
         }
     }
