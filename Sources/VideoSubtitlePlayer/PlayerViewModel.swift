@@ -470,15 +470,10 @@ class PlayerViewModel: ObservableObject {
 
     func previousSubtitle() {
         guard !subtitles.isEmpty else { return }
-        let target: Int
-        if currentSubtitleIndex > 0 {
-            target = currentSubtitleIndex - 1
-        } else if currentSubtitleIndex == 0 {
-            target = 0
-        } else {
-            let locked = sidebarHighlightIndex
-            target = locked > 0 ? locked - 1 : 0
-        }
+        // 用两者的较大值：双语合并后时间范围重叠时 currentSubtitleIndex 会退回到前一条，
+        // sidebarHighlightIndex 只前进不后退，取 max 避免卡死
+        let base = max(currentSubtitleIndex, sidebarHighlightIndex)
+        let target = base > 0 ? base - 1 : 0
         jumpToSubtitle(subtitles[target])
     }
 
@@ -495,8 +490,11 @@ class PlayerViewModel: ObservableObject {
 
     func nextSubtitle() {
         guard !subtitles.isEmpty else { return }
-        if currentSubtitleIndex >= 0 {
-            let next = currentSubtitleIndex + 1
+        // 用两者的较大值：双语合并后时间范围重叠时 currentSubtitleIndex 会退回到前一条，
+        // sidebarHighlightIndex 只前进不后退，取 max 避免 D 键卡死
+        let base = max(currentSubtitleIndex, sidebarHighlightIndex)
+        if base >= 0 {
+            let next = base + 1
             if next < subtitles.count { jumpToSubtitle(subtitles[next]) }
         } else {
             if let target = subtitles.firstIndex(where: { $0.startTime > now }) {
