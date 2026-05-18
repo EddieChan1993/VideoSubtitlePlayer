@@ -322,6 +322,11 @@ class PlayerViewModel: ObservableObject {
             } else if let nearest = cached.lastIndex(where: { $0.startTime <= time }) {
                 sidebarHighlightIndex = nearest
             }
+            // 字幕一命中缓存就立即更新 tab 标签，不等预缓存延迟
+            if case .single(let track) = mode, trackLabels[track.id] == nil,
+               let label = SubtitleExtractor.languageLabel(from: cached) {
+                trackLabels[track.id] = label
+            }
             isLoadingSubtitles = false
             loadingStatus = "已加载 \(cached.count) 条字幕"
             sidebarScrollTrigger += 1
@@ -364,6 +369,11 @@ class PlayerViewModel: ObservableObject {
         }
         await MainActor.run {
             self.subtitleCache[mode] = subs
+            // 字幕加载完成后立即检测语言，更新 tab 标签
+            if case .single(let track) = mode, self.trackLabels[track.id] == nil,
+               let label = SubtitleExtractor.languageLabel(from: subs) {
+                self.trackLabels[track.id] = label
+            }
             guard self.selectedMode == mode else { return }
             self.subtitles = subs
             let time = self.currentPlaybackTime
