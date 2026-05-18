@@ -203,51 +203,36 @@ enum SubtitleExtractor {
         var result: [Subtitle] = []
         var used = Set<Int>()
         for sub in primary {
-            let matches = secondary.enumerated().filter { !used.contains($0.offset) &&
-                max(sub.startTime, $0.element.startTime) < min(sub.endTime, $0.element.endTime) }
-            matches.forEach { used.insert($0.offset) }
+            // 只取重叠时长最大的那一条次轨，避免一条主轨吞并多条次轨产生超长合并项
+            let bestMatch = secondary.enumerated()
+                .filter { !used.contains($0.offset) &&
+                    max(sub.startTime, $0.element.startTime) < min(sub.endTime, $0.element.endTime) }
+                .max { a, b in
+                    let oa = min(sub.endTime, a.element.endTime) - max(sub.startTime, a.element.startTime)
+                    let ob = min(sub.endTime, b.element.endTime) - max(sub.startTime, b.element.startTime)
+                    return oa < ob
+                }
+            if let m = bestMatch { used.insert(m.offset) }
 
             let text: String
-            let mergedStart: TimeInterval
-            let mergedEnd: TimeInterval
-            if matches.isEmpty {
-                text = sub.text
-                mergedStart = sub.startTime
-                mergedEnd   = sub.endTime
-            } else {
-                // Deduplicate by line: only append secondary lines not already in primary.
-                // Handles the common case where one track already stores "English\nChinese"
-                // per entry — merging naively would produce "English\nChinese\nEnglish".
+            if let m = bestMatch {
                 let primaryLines = Set(
                     sub.cleanText
                         .components(separatedBy: "\n")
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
                 )
-                let newLines = matches.flatMap { m in
-                    m.element.cleanText
-                        .components(separatedBy: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty && !primaryLines.contains($0) }
-                }
-                text = newLines.isEmpty
-                    ? sub.cleanText
-                    : sub.cleanText + "\n" + newLines.joined(separator: "\n")
-                // Use the earliest start and latest end across all matched entries so the
-                // merged subtitle stays visible for the full duration of both tracks.
-                mergedStart = matches.reduce(sub.startTime) { min($0, $1.element.startTime) }
-                mergedEnd   = matches.reduce(sub.endTime)   { max($0, $1.element.endTime) }
+                let newLines = m.element.cleanText
+                    .components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && !primaryLines.contains($0) }
+                text = newLines.isEmpty ? sub.cleanText : sub.cleanText + "\n" + newLines.joined(separator: "\n")
+            } else {
+                text = sub.text
             }
-            result.append(Subtitle(id: result.count, startTime: mergedStart, endTime: mergedEnd, text: text))
+            result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: text))
         }
-        var sorted = result.sorted { $0.startTime < $1.startTime }
-        // 消除相邻条目时间重叠：endTime 不得超过下一条的 startTime
-        for i in 0..<sorted.count - 1 {
-            if sorted[i].endTime > sorted[i + 1].startTime {
-                sorted[i] = Subtitle(id: sorted[i].id, startTime: sorted[i].startTime,
-                                     endTime: sorted[i + 1].startTime, text: sorted[i].text)
-            }
-        }
+        let sorted = result.sorted { $0.startTime < $1.startTime }
         return sorted.enumerated().map { Subtitle(id: $0, startTime: $1.startTime, endTime: $1.endTime, text: $1.text) }
     }
 
