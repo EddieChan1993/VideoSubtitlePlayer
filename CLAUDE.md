@@ -385,6 +385,15 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | 使用 `-progress pipe:2 -loglevel quiet`，ffmpeg 将结构化进度（`out_time=HH:MM:SS.ffffff`）单独写入 stderr，解析 `out_time` / 总时长得到百分比，通过 `convertingStatus` 更新 UI overlay |
 | **文件** | `VideoConverter.swift` — `parseProgressTime(_:)`；`PlayerViewModel.swift` — `convertingStatus` |
 
+### Bug 19 — 持续按住 A/D 键，字幕跳转越来越迟钝
+| | |
+|---|---|
+| **现象** | 长按 A 或 D 键快速连跳字幕，跳转响应随时间推移越来越慢，最终几乎卡死 |
+| **根本原因** | `seekExact`（`absolute+exact`）精度高但耗时，每次 seek 需等待 demuxer 精确定位到关键帧后解码；长按产生的 `NSEvent` key-repeat 事件以固定频率（~30Hz）涌入，seek 请求不断积压在 mpv 队列中，越堆越多，响应延迟指数级增长 |
+| **尝试方向（已回退）** | 用 `NSEvent.isARepeat` 区分首次按键与 key-repeat；repeat 时改用 `absolute`（关键帧 seek，速度快但精度低）、单次按键保持 `seekExact`。实测体验更差：关键帧跳跃距离不可预期，字幕定位偏离，用户反馈"卡得很"，已回退 |
+| **结论** | mpv seek 队列积压是根本瓶颈，单纯切换 seek 模式无法解决。正确方向应是：在发起新 seek 前取消/丢弃队列中尚未执行的旧 seek（如 `mpv_abort_async_command` 或在事件循环层做防抖节流），但改动复杂，暂未实现，维持现状（全部用 `seekExact`） |
+| **文件** | `PlayerViewModel.swift` — `jumpToSubtitle()`、`nextSubtitle()`、`previousSubtitle()` |
+
 ### Bug 18 — 字幕跳转后视频慢于音频并加速追赶
 | | |
 |---|---|
@@ -420,3 +429,4 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 21. **ffmpeg 路径中的特殊字符需 `file:` 前缀**：ffmpeg 对含 `[` `]` 的路径默认做 glob 解析，导致"No such file or directory"。在所有输入/输出路径前加 `file:` 前缀可强制字面量解析，与 URL encoding 无关。
 22. **SRT 预处理是 ffmpeg 封装成功的前提**：字幕直接传给 ffmpeg 前需做四步标准化：① GBK/BOM → UTF-8；② `\r\n` / `\r` → `\n`；③ 时间戳补齐两位及规范 `-->` 空格；④ 零时长条目（`start == end`）赋予合成时长而非丢弃，否则内容丢失。任何一步缺失都可能导致封装后字幕为空、乱序或缺失。
 23. **ffmpeg 进度解析用 `-progress pipe:2 -loglevel quiet`**：`-progress` 将结构化进度（`out_time=HH:MM:SS.ffffff` 等）写入指定 fd，与普通日志分离。结合总时长计算百分比，比解析 stderr 的 `frame=` 行更可靠。
+24. **mpv seekExact 在高频按键下会积压队列**：`absolute+exact` seek 精度高但耗时；长按方向键产生的 key-repeat 事件速率（~30Hz）远超 seek 完成速率，请求堆积导致响应越来越慢。单纯切换为关键帧 seek（`absolute`）体验同样差（跳跃不可控）。正确做法是在发起新 seek 前丢弃未完成的旧 seek 请求（防抖/节流），而不是改变 seek 精度。
