@@ -54,6 +54,9 @@ class PlayerViewModel: ObservableObject {
     private var nextExternalTrackId = -100
     private var extractionTask: Task<Void, Never>?
 
+    /// seek 目标时间：在抵达此时间前屏蔽 sidebarHighlightIndex 自动更新，防止 seek 过渡帧闪跳
+    private var seekTargetTime: TimeInterval? = nil
+
     init() {
         let interval = CMTime(seconds: 0.08, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
@@ -413,6 +416,13 @@ class PlayerViewModel: ObservableObject {
 
         let idx = subtitles.firstIndex { $0.startTime <= time && $0.endTime > time } ?? -1
         if idx != currentSubtitleIndex { currentSubtitleIndex = idx }
+
+        // seek 过渡期内屏蔽 sidebarHighlightIndex 更新，防止经过上一条字幕时闪跳
+        if let target = seekTargetTime {
+            if time >= target { seekTargetTime = nil }  // 已抵达目标，恢复正常更新
+            else { return }
+        }
+
         // sidebarHighlightIndex only advances forward — never reverts to -1 between subtitles.
         // This keeps the sidebar showing the last seen entry highlighted.
         if idx >= 0, idx != sidebarHighlightIndex { sidebarHighlightIndex = idx }
@@ -451,6 +461,7 @@ class PlayerViewModel: ObservableObject {
 
     func jumpToSubtitle(_ subtitle: Subtitle) {
         sidebarHighlightIndex = subtitle.id
+        seekTargetTime = subtitle.startTime   // 屏蔽 seek 过渡帧引起的侧边栏闪跳
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
