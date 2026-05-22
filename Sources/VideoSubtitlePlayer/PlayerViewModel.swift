@@ -35,7 +35,7 @@ class PlayerViewModel: ObservableObject {
     @Published var videoTitle: String = ""
     /// 递增以强制侧边栏滚动到当前字幕（即使 sidebarHighlightIndex 未变化）
     @Published var sidebarScrollTrigger = 0
-    @Published var volume: Double = 50 {
+    @Published var volume: Double = 30 {
         didSet {
             if useMPV { mpvController?.setVolume(volume) }
             else { player.volume = Float(volume / 100.0) }
