@@ -86,6 +86,8 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // 窗口重新出现时恢复标题（onChange 在值未变时不触发）
+            NSApp.mainWindow?.title = vm.videoTitle.isEmpty ? "SubMelon" : vm.videoTitle
             // 先移除旧 monitor，防止多次 onAppear 时残留
             if let old = keyMonitor { NSEvent.removeMonitor(old); keyMonitor = nil }
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in

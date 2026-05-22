@@ -230,7 +230,10 @@ enum SubtitleExtractor {
             } else {
                 text = sub.text
             }
-            result.append(Subtitle(id: result.count, startTime: sub.startTime, endTime: sub.endTime, text: text))
+            // 扩展时间范围：取两轨的最早开始和最晚结束，防止字幕提前消失
+            let mergedStart = bestMatch.map { min(sub.startTime, $0.element.startTime) } ?? sub.startTime
+            let mergedEnd   = bestMatch.map { max(sub.endTime,   $0.element.endTime)   } ?? sub.endTime
+            result.append(Subtitle(id: result.count, startTime: mergedStart, endTime: mergedEnd, text: text))
         }
         let sorted = result.sorted { $0.startTime < $1.startTime }
         return sorted.enumerated().map { Subtitle(id: $0, startTime: $1.startTime, endTime: $1.endTime, text: $1.text) }
