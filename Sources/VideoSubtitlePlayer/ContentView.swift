@@ -85,7 +85,7 @@ struct ContentView: View {
                     }
                     .help("使用 Whisper 将视频音频识别为字幕")
                     .popover(isPresented: $showTranscribePanel, arrowEdge: .bottom) {
-                        TranscribeSettingsView(vm: vm)
+                        TranscribeSettingsView(vm: vm, isPresented: $showTranscribePanel)
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
@@ -977,6 +977,7 @@ final class _ResizeHandleNSView: NSView {
 
 struct TranscribeSettingsView: View {
     @ObservedObject var vm: PlayerViewModel
+    @Binding var isPresented: Bool          // 用于文件选择后重新弹出
     @AppStorage("whisper.modelPath")   private var modelPath:       String = ""
     @AppStorage("whisper.bilingual")   private var enableBilingual: Bool   = false
     @AppStorage("whisper.sourceLang")  private var sourceLang:      String = "en"
@@ -1065,6 +1066,10 @@ struct TranscribeSettingsView: View {
             if case .success(let url) = result {
                 vm.whisperModelPath = url.path
                 vm.objectWillChange.send()
+            }
+            // macOS 上 NSOpenPanel 会让 popover 失焦关闭；选完后重新弹出
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isPresented = true
             }
         }
     }
