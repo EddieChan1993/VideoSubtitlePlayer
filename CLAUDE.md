@@ -430,3 +430,21 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 22. **SRT 预处理是 ffmpeg 封装成功的前提**：字幕直接传给 ffmpeg 前需做四步标准化：① GBK/BOM → UTF-8；② `\r\n` / `\r` → `\n`；③ 时间戳补齐两位及规范 `-->` 空格；④ 零时长条目（`start == end`）赋予合成时长而非丢弃，否则内容丢失。任何一步缺失都可能导致封装后字幕为空、乱序或缺失。
 23. **ffmpeg 进度解析用 `-progress pipe:2 -loglevel quiet`**：`-progress` 将结构化进度（`out_time=HH:MM:SS.ffffff` 等）写入指定 fd，与普通日志分离。结合总时长计算百分比，比解析 stderr 的 `frame=` 行更可靠。
 24. **mpv seekExact 在高频按键下会积压队列**：`absolute+exact` seek 精度高但耗时；长按方向键产生的 key-repeat 事件速率（~30Hz）远超 seek 完成速率，请求堆积导致响应越来越慢。单纯切换为关键帧 seek（`absolute`）体验同样差（跳跃不可控）。正确做法是在发起新 seek 前丢弃未完成的旧 seek 请求（防抖/节流），而不是改变 seek 精度。
+25. **whisper-cli 使用 ggml `.bin` 格式模型**：`whisper-cli`（whisper.cpp）使用 `.bin` 格式（ggml），而非 openai-whisper 的 `.pt` 格式，两者完全不兼容，导入文件选择器必须过滤 `.bin`。
+26. **DispatchGroup.wait() 不能在 async 上下文调用**：Swift 6 会警告 `DispatchGroup.wait()` 在 async context 使用；解决方案是整个 Process 执行流放进 `withCheckedContinuation { continuation in DispatchQueue.global.async { ... group.wait() ... continuation.resume(...) } }`，把同步等待移到非 async 线程。
+27. **fileImporter 会关闭 transient popover**：`.fileImporter`（底层是 `NSOpenPanel`）会让 macOS 关闭当前弹出窗口；解决方案是在 popover 内容 view 接受 `@Binding var isPresented: Bool`，在 fileImporter 结果回调里 `DispatchQueue.main.asyncAfter(0.1) { isPresented = true }` 重新打开。
+28. **macOS 26 Translation.framework API 变化**：旧版 `TranslationSession(configuration:)` 不再适用；macOS 26 改为 `TranslationSession(installedSource: Locale.Language, target: Locale.Language?)`，需用 `#available(macOS 26, *)` 保护。
+
+---
+
+## 变更记录
+
+### 2026-05-26
+- 🆕 新增：音量默认 30% 并通过 UserDefaults 持久化，重启后保留上次音量
+- 🆕 新增：Whisper 语音转字幕功能（whisper-cli + ffmpeg pipeline，手动导入 `.bin` 模型，转录后自动加载字幕）
+- 🆕 新增：双语字幕生成选项（macOS 26 Translation.framework，生成原语言 + 目标语言双字幕文件）
+- 🆕 新增：build.sh 脚本（`--dev` 模式用 swift build debug；全量模式调用 make_app.sh；构建后自动启动 app）
+- 🆕 新增：内置字幕轨道支持删除（removeBuiltInTrack）
+- 🆕 新增：同名内置/外挂轨道自动加"（内置）"后缀区分，避免用户混淆
+- ♻️ 优化：TranscribeSettingsView 弹窗在导入模型后自动保持开启状态
+- ♻️ 优化：弹窗内所有按钮添加 hover / press 交互动效，移除被选中态
