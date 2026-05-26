@@ -35,8 +35,12 @@ class PlayerViewModel: ObservableObject {
     @Published var videoTitle: String = ""
     /// 递增以强制侧边栏滚动到当前字幕（即使 sidebarHighlightIndex 未变化）
     @Published var sidebarScrollTrigger = 0
-    @Published var volume: Double = 30 {
+    @Published var volume: Double = {
+        let saved = UserDefaults.standard.double(forKey: "player.volume")
+        return saved > 0 ? saved : 30
+    }() {
         didSet {
+            UserDefaults.standard.set(volume, forKey: "player.volume")
             if useMPV { mpvController?.setVolume(volume) }
             else { player.volume = Float(volume / 100.0) }
         }
@@ -730,14 +734,15 @@ class PlayerViewModel: ObservableObject {
 
     // MARK: - Format warning
 
-    // MARK: - Transcribe (Whisper)
+    // MARK: - Transcribe (whisper-cli / whisper.cpp)
 
+    /// whisper-cli 可执行文件路径（whisper.cpp，brew install whisper-cpp）
     static let whisperPath: String? = {
-        ["/opt/homebrew/bin/whisper", "/usr/local/bin/whisper"]
+        ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
             .first { FileManager.default.fileExists(atPath: $0) }
     }()
 
-    /// 用户手动导入的模型文件路径（持久化到 UserDefaults）
+    /// 用户手动导入的 ggml .bin 模型文件路径（持久化到 UserDefaults）
     var whisperModelPath: String {
         get { UserDefaults.standard.string(forKey: "whisper.modelPath") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "whisper.modelPath") }
@@ -750,12 +755,12 @@ class PlayerViewModel: ObservableObject {
         return URL(fileURLWithPath: p).lastPathComponent
     }
 
-    /// 弹出文件选择器，让用户导入 .pt 模型文件（不拷贝，直接记录路径）
+    /// 弹出文件选择器，让用户导入 ggml .bin 模型文件（不拷贝，直接记录路径）
     func importWhisperModel() {
         let panel = NSOpenPanel()
-        panel.title = "选择 Whisper 模型文件（.pt）"
-        panel.message = "请选择 tiny / base / small / medium / large 等 .pt 格式文件"
-        panel.allowedContentTypes = [.init(filenameExtension: "pt") ?? .data]
+        panel.title = "选择 Whisper 模型文件"
+        panel.message = "请选择 ggml-tiny / ggml-small / ggml-medium / ggml-large 等 .bin 格式文件"
+        panel.allowedContentTypes = [.init(filenameExtension: "bin") ?? .data]
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -772,81 +777,83 @@ class PlayerViewModel: ObservableObject {
 
     func transcribeAudio() {
         guard let videoURL else { return }
-        guard let whisper = PlayerViewModel.whisperPath else {
+        guard let whisperCLI = PlayerViewModel.whisperPath else {
             let a = NSAlert()
-            a.messageText = "未找到 whisper"
-            a.informativeText = "请先安装：\npip install openai-whisper"
+            a.messageText = "未找到 whisper-cli"
+            a.informativeText = "请先安装：brew install whisper-cpp"
             a.alertStyle = .warning
             a.runModal()
             return
         }
+        guard let ffmpeg = SubtitleExtractor.ffmpegPath else { return }
         let modelPath = whisperModelPath
         guard !modelPath.isEmpty else { return }
 
-        let outDir = videoURL.deletingLastPathComponent()
-        let stem   = videoURL.deletingPathExtension().lastPathComponent
-        let outSRT = outDir.appendingPathComponent(stem + ".srt")
+        let outDir  = videoURL.deletingLastPathComponent()
+        let stem    = videoURL.deletingPathExtension().lastPathComponent
+        let outSRT  = outDir.appendingPathComponent(stem + ".srt")
+        // whisper-cli 只接受 WAV，先用 ffmpeg 提取为 16kHz 单声道
+        let tempWAV = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".wav")
 
         isTranscribing = true
-        transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
+        transcribeStatus = "正在提取音频…"
 
-        // 用 withCheckedContinuation 把 Process 执行封在同步 DispatchQueue 里，
-        // 使 DispatchGroup.wait() 不处于 async 上下文，消除 Swift 6 警告。
         Task { [weak self] in
             guard let self else { return }
 
-            enum WhisperResult {
-                case success
-                case launchFailed(String)
-                case transcribeFailed(String)
+            enum WhisperResult { case success; case failed(String) }
+
+            // 辅助：在同步上下文运行子进程并返回（退出码, stderr）
+            func runSync(_ exe: String, _ args: [String]) -> (Int32, String) {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: exe)
+                p.arguments = args
+                let outPipe = Pipe(), errPipe = Pipe()
+                p.standardOutput = outPipe; p.standardError = errPipe
+                let errBox = DataBox()
+                let g = DispatchGroup()
+                g.enter(); DispatchQueue.global().async { errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile()); g.leave() }
+                g.enter(); DispatchQueue.global().async { _ = outPipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+                guard (try? p.run()) != nil else { g.wait(); return (-1, "launch failed") }
+                p.waitUntilExit(); g.wait()
+                return (p.terminationStatus, String(data: errBox.data, encoding: .utf8) ?? "")
             }
 
             let result: WhisperResult = await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let proc = Process()
-                    proc.executableURL = URL(fileURLWithPath: whisper)
-                    proc.arguments = [
-                        videoURL.path,
-                        "--output_format", "srt",
-                        "--output_dir", outDir.path,
-                        "--model", modelPath,
-                        "--verbose", "False"
-                    ]
+                    defer { try? FileManager.default.removeItem(at: tempWAV) }
 
-                    let outPipe = Pipe()
-                    let errPipe = Pipe()
-                    proc.standardOutput = outPipe
-                    proc.standardError  = errPipe
-
-                    // 后台消费管道，防止 pipe buffer 溢出死锁
-                    let errBox = DataBox()
-                    let group  = DispatchGroup()
-                    group.enter()
-                    DispatchQueue.global().async {
-                        errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-                        group.leave()
-                    }
-                    group.enter()
-                    DispatchQueue.global().async {
-                        _ = outPipe.fileHandleForReading.readDataToEndOfFile()
-                        group.leave()
-                    }
-
-                    do { try proc.run() } catch {
-                        group.wait()
-                        continuation.resume(returning: .launchFailed(error.localizedDescription))
+                    // Step 1: 提取 16kHz 单声道 WAV
+                    let (audioCode, audioErr) = runSync(ffmpeg, [
+                        "-y", "-i", videoURL.path,
+                        "-vn", "-ar", "16000", "-ac", "1", "-f", "wav",
+                        tempWAV.path
+                    ])
+                    guard audioCode == 0 else {
+                        continuation.resume(returning: .failed("音频提取失败：\(audioErr.suffix(200))"))
                         return
                     }
 
-                    proc.waitUntilExit()
-                    group.wait()
+                    // 更新状态提示
+                    DispatchQueue.main.async { [self] in
+                        self.transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
+                    }
 
-                    if proc.terminationStatus == 0,
-                       FileManager.default.fileExists(atPath: outSRT.path) {
+                    // Step 2: whisper-cli 识别
+                    // -of 指定输出前缀（不含扩展名），自动生成 <prefix>.srt
+                    let outPrefix = outDir.appendingPathComponent(stem).path
+                    let (wCode, wErr) = runSync(whisperCLI, [
+                        "-m", modelPath,
+                        "-f", tempWAV.path,
+                        "-osrt",
+                        "-of", outPrefix
+                    ])
+
+                    if wCode == 0, FileManager.default.fileExists(atPath: outSRT.path) {
                         continuation.resume(returning: .success)
                     } else {
-                        let err = String(data: errBox.data, encoding: .utf8) ?? ""
-                        continuation.resume(returning: .transcribeFailed(err))
+                        continuation.resume(returning: .failed(wErr.isEmpty ? "whisper-cli 异常退出" : String(wErr.suffix(400))))
                     }
                 }
             }
@@ -857,15 +864,10 @@ class PlayerViewModel: ObservableObject {
                 switch result {
                 case .success:
                     self.loadExternalSubtitle(from: outSRT, autoSelect: true)
-                case .launchFailed(let msg):
-                    let a = NSAlert()
-                    a.messageText = "启动 whisper 失败"
-                    a.informativeText = msg
-                    a.runModal()
-                case .transcribeFailed(let err):
+                case .failed(let err):
                     let a = NSAlert()
                     a.messageText = "语音识别失败"
-                    a.informativeText = err.isEmpty ? "whisper 进程异常退出" : String(err.suffix(400))
+                    a.informativeText = err
                     a.alertStyle = .warning
                     a.runModal()
                 }

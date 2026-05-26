@@ -1044,7 +1044,7 @@ struct TranscribeSettingsView: View {
 
             Divider()
 
-            Text("支持 tiny / base / small / medium / large 等 .pt 格式\n生成的 SRT 保存至视频同目录并自动加载")
+            Text("支持 ggml-tiny / small / medium / large 等 .bin 格式\n生成的 SRT 保存至视频同目录并自动加载")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
