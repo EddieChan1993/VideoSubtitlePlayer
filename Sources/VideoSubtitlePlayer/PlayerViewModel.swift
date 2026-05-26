@@ -1049,29 +1049,36 @@ class PlayerViewModel: ObservableObject {
             return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
         }
 
-        // 收集所有当前 tab 的字幕来源
-        // 外挂轨道：直接用已有文件 URL
-        // 内置轨道：从缓存序列化为临时 SRT 文件
-        var subURLs: [URL] = []
-        var builtInTempFiles: [URL] = []   // 内置轨道产生的临时文件，结束后清理
+        // ── 按来源把当前所有 tab 分为三类 ──────────────────────────────
+        //
+        //  1. embeddedSubTracks (id >= 0)      视频内部字幕流，ffmpeg 可用 0:s:N 直接映射
+        //  2. companionSubTracks (id < 0 && id > -100)  同目录伴随文件（video.srt 等）
+        //  3. externalSubTracks  (id <= -100)  用户手动加载的外挂文件
+        //
+        // 1 类无需额外输入，直接在 buildArgs 用 -map 0:s:{index} 指定；
+        // 2、3 类收集文件 URL，作为 ffmpeg 的额外输入流。
 
+        let embeddedSubTracks = availableTracks.filter { $0.id >= 0 }
+
+        var fileSubURLs: [URL] = []        // 文件型字幕（按 tab 顺序）
+        let videoDir = videoURL.deletingLastPathComponent()
         for track in availableTracks {
-            if track.id <= -100 {
-                if let url = externalTrackURLs[track.id] { subURLs.append(url) }
-            } else {
-                guard let subs = subtitleCache[.single(track)], !subs.isEmpty else { continue }
-                let content = subs.enumerated().map { i, sub in
-                    "\(i+1)\n\(formatSRTTime(sub.startTime)) --> \(formatSRTTime(sub.endTime))\n\(sub.cleanText)\n\n"
-                }.joined()
-                let tmp = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString + ".srt")
-                if (try? content.write(to: tmp, atomically: true, encoding: .utf8)) != nil {
-                    subURLs.append(tmp)
-                    builtInTempFiles.append(tmp)
+            if track.id < 0 && track.id > -100 {
+                // 伴随文件：track.title 即文件名
+                if let title = track.title {
+                    let url = videoDir.appendingPathComponent(title)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        fileSubURLs.append(url)
+                    }
                 }
+            } else if track.id <= -100 {
+                if let url = externalTrackURLs[track.id] { fileSubURLs.append(url) }
             }
         }
-        guard !subURLs.isEmpty else { return }
+
+        guard !embeddedSubTracks.isEmpty || !fileSubURLs.isEmpty else { return }
+        let subURLs = fileSubURLs          // 传入 Task 供 prepareSubtitle 处理
+        let builtInTempFiles: [URL] = []   // 无需手动创建临时文件，嵌入流直接用 -map
 
         // 确认弹窗
         let confirm = NSAlert()
@@ -1084,15 +1091,15 @@ class PlayerViewModel: ObservableObject {
 
         // 输出路径：同目录下 cleanStem.embedded.mkv
         // 先去掉已有的 .embedded 后缀链，防止重复打包时叠加（03.embedded.embedded...）
-        let videoDir = videoURL.deletingLastPathComponent()
+        let outVideoDir = videoURL.deletingLastPathComponent()
         var cleanStem = videoURL.deletingPathExtension().lastPathComponent
         while cleanStem.lowercased().hasSuffix(".embedded") {
             cleanStem = String(cleanStem.dropLast(".embedded".count))
         }
-        var outURL = videoDir.appendingPathComponent(cleanStem + ".embedded.mkv")
+        var outURL = outVideoDir.appendingPathComponent(cleanStem + ".embedded.mkv")
         // 如果清理后仍与输入路径相同（极罕见），加 _new 避免 ffmpeg 读写同一文件
         if outURL.path == videoURL.path {
-            outURL = videoDir.appendingPathComponent(cleanStem + ".embedded_new.mkv")
+            outURL = outVideoDir.appendingPathComponent(cleanStem + ".embedded_new.mkv")
         }
 
         isConverting = true
@@ -1234,9 +1241,19 @@ class PlayerViewModel: ObservableObject {
             func buildArgs(videoCodec: String, audioCodec: String) -> [String] {
                 var args = ["-y", "-i", "file:\(videoURL.path)"]
                 for path in preparedSubPaths { args += ["-i", path] }
-                args += ["-map", "0"]       // 先映射源视频所有流
-                args += ["-map", "-0:s"]    // 再排除源视频的字幕流，避免保留旧内置字幕
-                for i in 1...preparedSubPaths.count { args += ["-map", "\(i):0"] }
+
+                // 精确映射：只保留视音频，字幕流由下面逐一控制
+                args += ["-map", "0:V"]   // 所有视频流
+                args += ["-map", "0:a?"]  // 所有音频流（? = 无音频时不报错）
+
+                // 仍在 tab 里的内嵌字幕流：用字幕相对索引映射
+                for track in embeddedSubTracks {
+                    args += ["-map", "0:s:\(track.index)"]
+                }
+                // 文件型字幕（companion + 外挂）：各自作为独立输入流
+                for i in 1...max(1, preparedSubPaths.count) where i <= preparedSubPaths.count {
+                    args += ["-map", "\(i):0"]
+                }
                 args += ["-c:v", videoCodec, "-c:a", audioCodec, "-c:s", "srt", "file:\(finalOutURL.path)"]
                 return args
             }
