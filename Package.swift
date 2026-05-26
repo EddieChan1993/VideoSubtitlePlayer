@@ -10,6 +10,7 @@ let package = Package(
             path: "Sources/VideoSubtitlePlayer",
             linkerSettings: [
                 .linkedFramework("OpenGL"),
+                .linkedFramework("Translation"),
             ]
         )
     ]

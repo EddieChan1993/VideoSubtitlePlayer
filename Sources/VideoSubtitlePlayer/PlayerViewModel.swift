@@ -1,6 +1,9 @@
 import AVFoundation
 import Combine
 import SwiftUI
+#if canImport(Translation)
+import Translation
+#endif
 
 class PlayerViewModel: ObservableObject {
     let player = AVPlayer()
@@ -775,7 +778,7 @@ class PlayerViewModel: ObservableObject {
         objectWillChange.send()
     }
 
-    func transcribeAudio() {
+    func transcribeAudio(bilingual: Bool = false, sourceLang: String = "en", targetLang: String = "zh") {
         guard let videoURL else { return }
         guard let whisperCLI = PlayerViewModel.whisperPath else {
             let a = NSAlert()
@@ -858,20 +861,100 @@ class PlayerViewModel: ObservableObject {
                 }
             }
 
-            await MainActor.run {
-                self.isTranscribing = false
-                self.transcribeStatus = ""
-                switch result {
-                case .success:
-                    self.loadExternalSubtitle(from: outSRT, autoSelect: true)
-                case .failed(let err):
+            switch result {
+            case .failed(let err):
+                await MainActor.run {
+                    self.isTranscribing = false
+                    self.transcribeStatus = ""
                     let a = NSAlert()
                     a.messageText = "语音识别失败"
                     a.informativeText = err
                     a.alertStyle = .warning
                     a.runModal()
                 }
+            case .success:
+                // 翻译生成双语 SRT
+                var bilingualURL: URL? = nil
+                if bilingual {
+                    await MainActor.run { self.transcribeStatus = "正在翻译字幕…" }
+                    if #available(macOS 26, *) {
+                        bilingualURL = await self.translateSRT(at: outSRT, sourceLang: sourceLang, targetLang: targetLang)
+                    }
+                }
+                await MainActor.run {
+                    self.isTranscribing = false
+                    self.transcribeStatus = ""
+                    // 原始字幕先加载（auto-select）
+                    self.loadExternalSubtitle(from: outSRT, autoSelect: bilingualURL == nil)
+                    // 双语字幕也加载（选中）
+                    if let bilingualURL {
+                        self.loadExternalSubtitle(from: bilingualURL, autoSelect: true)
+                    }
+                }
             }
+        }
+    }
+
+    // MARK: - Apple Translation (macOS 15+)
+
+    private struct SRTBlock {
+        let index: String
+        let timing: String
+        let text: String   // 原始文本，可能多行
+    }
+
+    private func parseSRTBlocks(_ content: String) -> [SRTBlock] {
+        var blocks: [SRTBlock] = []
+        let normalized = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        for chunk in normalized.components(separatedBy: "\n\n") {
+            let lines = chunk.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            guard lines.count >= 2,
+                  let ti = lines.firstIndex(where: { $0.contains("-->") }) else { continue }
+            let idx  = ti > 0 ? lines[0] : String(blocks.count + 1)
+            let text = lines[(ti + 1)...].joined(separator: "\n")
+            blocks.append(SRTBlock(index: idx, timing: lines[ti], text: text))
+        }
+        return blocks
+    }
+
+    @available(macOS 26, *)
+    private func translateSRT(at url: URL, sourceLang: String, targetLang: String) async -> URL? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let blocks = parseSRTBlocks(content)
+        guard !blocks.isEmpty else { return nil }
+
+        // 每个 block 文本合并为单行送翻译（避免多行混淆）
+        let texts = blocks.map { $0.text.replacingOccurrences(of: "\n", with: " ") }
+
+        let srcLang  = Locale.Language(identifier: sourceLang)
+        let dstLangId = targetLang == "zh" ? "zh-Hans" : targetLang
+        let dstLang  = Locale.Language(identifier: dstLangId)
+
+        // macOS 26 直接初始化 TranslationSession
+        let session = TranslationSession(installedSource: srcLang, target: dstLang)
+
+        do {
+            let requests  = texts.map { TranslationSession.Request(sourceText: $0) }
+            let responses = try await session.translations(from: requests)
+
+            var srt = ""
+            for (i, block) in blocks.enumerated() {
+                let translation = i < responses.count
+                    ? responses[i].targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                srt += "\(block.index)\n\(block.timing)\n\(block.text)"
+                if !translation.isEmpty { srt += "\n\(translation)" }
+                srt += "\n\n"
+            }
+
+            let outURL = url.deletingPathExtension()
+                .appendingPathExtension(targetLang + ".srt")
+            try srt.write(to: outURL, atomically: true, encoding: .utf8)
+            return outURL
+        } catch {
+            return nil
         }
     }
 
