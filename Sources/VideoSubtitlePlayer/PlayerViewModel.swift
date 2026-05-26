@@ -139,6 +139,8 @@ class PlayerViewModel: ObservableObject {
     @Published var isPreparing = false
     @Published var isConverting = false
     @Published var convertingStatus = ""
+    @Published var isTranscribing = false
+    @Published var transcribeStatus = ""
 
     private func playDirectly(url: URL) {
         // Prefer mpv — handles any format natively with no conversion
@@ -727,6 +729,96 @@ class PlayerViewModel: ObservableObject {
     }
 
     // MARK: - Format warning
+
+    // MARK: - Transcribe (Whisper)
+
+    static let whisperPath: String? = {
+        ["/opt/homebrew/bin/whisper", "/usr/local/bin/whisper"]
+            .first { FileManager.default.fileExists(atPath: $0) }
+    }()
+
+    func transcribeAudio() {
+        guard let videoURL else { return }
+        guard let whisper = PlayerViewModel.whisperPath else {
+            let a = NSAlert()
+            a.messageText = "未找到 whisper"
+            a.informativeText = "请先安装：\npip install openai-whisper"
+            a.alertStyle = .warning
+            a.runModal()
+            return
+        }
+
+        let outDir  = videoURL.deletingLastPathComponent()
+        let stem    = videoURL.deletingPathExtension().lastPathComponent
+        let outSRT  = outDir.appendingPathComponent(stem + ".srt")
+
+        isTranscribing = true
+        transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: whisper)
+            proc.arguments = [
+                videoURL.path,
+                "--output_format", "srt",
+                "--output_dir", outDir.path,
+                "--model", "small",
+                "--verbose", "False"
+            ]
+
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError  = errPipe
+
+            // 后台消费管道，防止 pipe buffer 溢出死锁
+            let errBox = DataBox()
+            let group  = DispatchGroup()
+            group.enter()
+            DispatchQueue.global().async {
+                errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+                group.leave()
+            }
+            group.enter()
+            DispatchQueue.global().async {
+                _ = outPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+
+            do { try proc.run() } catch {
+                await MainActor.run {
+                    self?.isTranscribing = false
+                    self?.transcribeStatus = ""
+                    let a = NSAlert()
+                    a.messageText = "启动 whisper 失败"
+                    a.informativeText = error.localizedDescription
+                    a.runModal()
+                }
+                return
+            }
+
+            proc.waitUntilExit()
+            group.wait()
+
+            let success = proc.terminationStatus == 0
+                       && FileManager.default.fileExists(atPath: outSRT.path)
+
+            await MainActor.run {
+                self?.isTranscribing = false
+                self?.transcribeStatus = ""
+                if success {
+                    self?.loadExternalSubtitle(from: outSRT, autoSelect: true)
+                } else {
+                    let errStr = String(data: errBox.data, encoding: .utf8) ?? ""
+                    let a = NSAlert()
+                    a.messageText = "语音识别失败"
+                    a.informativeText = errStr.isEmpty ? "whisper 进程异常退出" : String(errStr.suffix(400))
+                    a.alertStyle = .warning
+                    a.runModal()
+                }
+            }
+        }
+    }
 
     /// Returns the URL to play: renamed .mp4 if user agreed, nil to play original.
     // MARK: - Convert to MKV

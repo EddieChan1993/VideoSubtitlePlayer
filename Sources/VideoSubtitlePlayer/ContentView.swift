@@ -77,6 +77,13 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
+                    Button(action: vm.transcribeAudio) {
+                        Label("语音转字幕", systemImage: "waveform.badge.microphone")
+                    }
+                    .help("使用 Whisper 将视频音频识别为字幕（需 openai-whisper，small 模型）")
+                    .disabled(vm.isTranscribing)
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: vm.exportSubtitlesAsCSV) {
                         Label("导出字幕", systemImage: "square.and.arrow.up")
                     }
@@ -147,6 +154,9 @@ struct ContentView: View {
                     }
                     if vm.isConverting {
                         convertingOverlay
+                    }
+                    if vm.isTranscribing {
+                        transcribingOverlay
                     }
                     seekBarOverlay
                 }
@@ -265,6 +275,22 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 ProgressView().scaleEffect(0.7)
                 Text(vm.convertingStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.top, 12)
+            Spacer()
+        }
+    }
+
+    private var transcribingOverlay: some View {
+        VStack {
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.7)
+                Text(vm.transcribeStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
