@@ -790,65 +790,82 @@ class PlayerViewModel: ObservableObject {
         isTranscribing = true
         transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
 
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: whisper)
-            // whisper 的 load_model 会先检查参数是否为本地文件路径，存在即直接加载
-            proc.arguments = [
-                videoURL.path,
-                "--output_format", "srt",
-                "--output_dir", outDir.path,
-                "--model", modelPath,
-                "--verbose", "False"
-            ]
+        // 用 withCheckedContinuation 把 Process 执行封在同步 DispatchQueue 里，
+        // 使 DispatchGroup.wait() 不处于 async 上下文，消除 Swift 6 警告。
+        Task { [weak self] in
+            guard let self else { return }
 
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            proc.standardOutput = outPipe
-            proc.standardError  = errPipe
-
-            // 后台消费管道，防止 pipe buffer 溢出死锁
-            let errBox = DataBox()
-            let group  = DispatchGroup()
-            group.enter()
-            DispatchQueue.global().async {
-                errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-                group.leave()
-            }
-            group.enter()
-            DispatchQueue.global().async {
-                _ = outPipe.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
+            enum WhisperResult {
+                case success
+                case launchFailed(String)
+                case transcribeFailed(String)
             }
 
-            do { try proc.run() } catch {
-                await MainActor.run {
-                    self?.isTranscribing = false
-                    self?.transcribeStatus = ""
-                    let a = NSAlert()
-                    a.messageText = "启动 whisper 失败"
-                    a.informativeText = error.localizedDescription
-                    a.runModal()
+            let result: WhisperResult = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: whisper)
+                    proc.arguments = [
+                        videoURL.path,
+                        "--output_format", "srt",
+                        "--output_dir", outDir.path,
+                        "--model", modelPath,
+                        "--verbose", "False"
+                    ]
+
+                    let outPipe = Pipe()
+                    let errPipe = Pipe()
+                    proc.standardOutput = outPipe
+                    proc.standardError  = errPipe
+
+                    // 后台消费管道，防止 pipe buffer 溢出死锁
+                    let errBox = DataBox()
+                    let group  = DispatchGroup()
+                    group.enter()
+                    DispatchQueue.global().async {
+                        errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+                        group.leave()
+                    }
+                    group.enter()
+                    DispatchQueue.global().async {
+                        _ = outPipe.fileHandleForReading.readDataToEndOfFile()
+                        group.leave()
+                    }
+
+                    do { try proc.run() } catch {
+                        group.wait()
+                        continuation.resume(returning: .launchFailed(error.localizedDescription))
+                        return
+                    }
+
+                    proc.waitUntilExit()
+                    group.wait()
+
+                    if proc.terminationStatus == 0,
+                       FileManager.default.fileExists(atPath: outSRT.path) {
+                        continuation.resume(returning: .success)
+                    } else {
+                        let err = String(data: errBox.data, encoding: .utf8) ?? ""
+                        continuation.resume(returning: .transcribeFailed(err))
+                    }
                 }
-                return
             }
-
-            proc.waitUntilExit()
-            group.wait()
-
-            let success = proc.terminationStatus == 0
-                       && FileManager.default.fileExists(atPath: outSRT.path)
 
             await MainActor.run {
-                self?.isTranscribing = false
-                self?.transcribeStatus = ""
-                if success {
-                    self?.loadExternalSubtitle(from: outSRT, autoSelect: true)
-                } else {
-                    let errStr = String(data: errBox.data, encoding: .utf8) ?? ""
+                self.isTranscribing = false
+                self.transcribeStatus = ""
+                switch result {
+                case .success:
+                    self.loadExternalSubtitle(from: outSRT, autoSelect: true)
+                case .launchFailed(let msg):
+                    let a = NSAlert()
+                    a.messageText = "启动 whisper 失败"
+                    a.informativeText = msg
+                    a.runModal()
+                case .transcribeFailed(let err):
                     let a = NSAlert()
                     a.messageText = "语音识别失败"
-                    a.informativeText = errStr.isEmpty ? "whisper 进程异常退出" : String(errStr.suffix(400))
+                    a.informativeText = err.isEmpty ? "whisper 进程异常退出" : String(err.suffix(400))
                     a.alertStyle = .warning
                     a.runModal()
                 }
