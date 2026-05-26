@@ -1027,17 +1027,50 @@ class PlayerViewModel: ObservableObject {
     /// Returns the URL to play: renamed .mp4 if user agreed, nil to play original.
     // MARK: - Convert to MKV
 
-    /// 当前有外挂字幕轨道时才显示转换按钮
+    /// 当前有任意字幕 tab（且有数据）时显示转换按钮
     var canConvertToMKV: Bool {
-        availableTracks.contains { $0.id <= -100 }
+        availableTracks.contains { track in
+            if track.id <= -100 { return externalTrackURLs[track.id] != nil }
+            return subtitleCache[.single(track)] != nil
+        }
     }
 
     func convertToMKV() {
         guard let videoURL,
               let ffmpeg = SubtitleExtractor.ffmpegPath else { return }
 
-        let extTrackIds = availableTracks.filter { $0.id <= -100 }.map { $0.id }
-        let subURLs = extTrackIds.compactMap { externalTrackURLs[$0] }
+        // 辅助：把 TimeInterval 格式化为 SRT 时间戳 HH:MM:SS,mmm
+        func formatSRTTime(_ t: TimeInterval) -> String {
+            let totalMs = Int(max(0, t) * 1000)
+            let ms = totalMs % 1000
+            let s  = (totalMs / 1000) % 60
+            let m  = (totalMs / 60000) % 60
+            let h  = totalMs / 3600000
+            return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
+        }
+
+        // 收集所有当前 tab 的字幕来源
+        // 外挂轨道：直接用已有文件 URL
+        // 内置轨道：从缓存序列化为临时 SRT 文件
+        var subURLs: [URL] = []
+        var builtInTempFiles: [URL] = []   // 内置轨道产生的临时文件，结束后清理
+
+        for track in availableTracks {
+            if track.id <= -100 {
+                if let url = externalTrackURLs[track.id] { subURLs.append(url) }
+            } else {
+                guard let subs = subtitleCache[.single(track)], !subs.isEmpty else { continue }
+                let content = subs.enumerated().map { i, sub in
+                    "\(i+1)\n\(formatSRTTime(sub.startTime)) --> \(formatSRTTime(sub.endTime))\n\(sub.cleanText)\n\n"
+                }.joined()
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".srt")
+                if (try? content.write(to: tmp, atomically: true, encoding: .utf8)) != nil {
+                    subURLs.append(tmp)
+                    builtInTempFiles.append(tmp)
+                }
+            }
+        }
         guard !subURLs.isEmpty else { return }
 
         // 确认弹窗
@@ -1249,6 +1282,7 @@ class PlayerViewModel: ObservableObject {
             }
 
             tempSubFiles.forEach { try? FileManager.default.removeItem(at: $0) }
+            builtInTempFiles.forEach { try? FileManager.default.removeItem(at: $0) }
 
             await MainActor.run {
                 self.isConverting = false
