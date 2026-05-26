@@ -875,7 +875,9 @@ class PlayerViewModel: ObservableObject {
                         "-m", modelPath,
                         "-f", tempWAV.path,
                         "-osrt",
-                        "-of", outPrefix
+                        "-of", outPrefix,
+                        "-ml", "42",   // 每段最多 42 字符，超出按内部时间戳切分
+                        "-sow"         // 按单词边界切，不截断词中间
                     ])
 
                     guard wCode == 0 else {
@@ -885,17 +887,22 @@ class PlayerViewModel: ObservableObject {
 
                     // 优先检查预期路径 stem.asr.srt；
                     // whisper-cli 某些版本会再附加语言码（如 stem.asr.en.srt），做 fallback 扫描
+                    var foundSRT: URL? = nil
                     if FileManager.default.fileExists(atPath: outSRT.path) {
-                        continuation.resume(returning: .success(outSRT))
-                        return
+                        foundSRT = outSRT
+                    } else {
+                        let outPrefixName = outSRT.deletingPathExtension().lastPathComponent.lowercased()
+                        let items = (try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? []
+                        if let found = items.first(where: { name in
+                            let lower = name.lowercased()
+                            return lower.hasSuffix(".srt") && lower.hasPrefix(outPrefixName)
+                        }) {
+                            foundSRT = outDir.appendingPathComponent(found)
+                        }
                     }
-                    let outPrefixName = outSRT.deletingPathExtension().lastPathComponent.lowercased()
-                    let items = (try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? []
-                    if let found = items.first(where: { name in
-                        let lower = name.lowercased()
-                        return lower.hasSuffix(".srt") && lower.hasPrefix(outPrefixName)
-                    }) {
-                        continuation.resume(returning: .success(outDir.appendingPathComponent(found)))
+
+                    if let url = foundSRT {
+                        continuation.resume(returning: .success(url))
                     } else {
                         continuation.resume(returning: .failed("识别完成但未找到输出 SRT 文件（已检查目录：\(outDir.path)）\n\n whisper-cli 输出：\(wErr.suffix(300))"))
                     }
