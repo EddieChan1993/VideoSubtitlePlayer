@@ -1049,12 +1049,17 @@ class PlayerViewModel: ObservableObject {
         confirm.addButton(withTitle: "否，取消")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        // 输出路径：同目录，同名，.mkv 后缀；若与原文件同名则加 _embedded
-        var outURL = videoURL.deletingPathExtension().appendingPathExtension("mkv")
+        // 输出路径：同目录下 cleanStem.embedded.mkv
+        // 先去掉已有的 .embedded 后缀链，防止重复打包时叠加（03.embedded.embedded...）
+        let videoDir = videoURL.deletingLastPathComponent()
+        var cleanStem = videoURL.deletingPathExtension().lastPathComponent
+        while cleanStem.lowercased().hasSuffix(".embedded") {
+            cleanStem = String(cleanStem.dropLast(".embedded".count))
+        }
+        var outURL = videoDir.appendingPathComponent(cleanStem + ".embedded.mkv")
+        // 如果清理后仍与输入路径相同（极罕见），加 _new 避免 ffmpeg 读写同一文件
         if outURL.path == videoURL.path {
-            outURL = videoURL.deletingPathExtension()
-                .appendingPathExtension("embedded")
-                .appendingPathExtension("mkv")
+            outURL = videoDir.appendingPathComponent(cleanStem + ".embedded_new.mkv")
         }
 
         isConverting = true
