@@ -680,6 +680,28 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// 从显示列表移除内置字幕轨道（不修改视频文件，只清空 app 内的轨道/缓存）
+    func removeBuiltInTrack(_ track: SubtitleTrack) {
+        guard track.id > -100 else { return }
+        trackLabels.removeValue(forKey: track.id)
+        subtitleCache.removeValue(forKey: .single(track))
+        availableTracks.removeAll { $0.id == track.id }
+        syncChipOrder()
+
+        if case .single(let selected) = selectedMode, selected.id == track.id {
+            if let first = availableTracks.first {
+                selectMode(.single(first))
+            } else {
+                selectedMode = nil
+                subtitles = []
+                currentSubtitleIndex = -1
+                sidebarHighlightIndex = -1
+                isLoadingSubtitles = false
+                loadingStatus = "未找到字幕轨道"
+            }
+        }
+    }
+
     func removeExternalTrack(_ track: SubtitleTrack) {
         guard track.id <= -100 else { return }
         if let url = externalTrackURLs[track.id], let videoURL {

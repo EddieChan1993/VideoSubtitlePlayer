@@ -30,7 +30,11 @@ struct SubtitleListView: View {
                                 label: option.label,
                                 isSelected: option.mode == vm.selectedMode,
                                 action: { vm.selectMode(option.mode) },
-                                onRemove: option.removeTrack.map { track in { vm.removeExternalTrack(track) } }
+                                onRemove: option.removeTrack.map { track in
+                                    option.isExternal
+                                        ? { vm.removeExternalTrack(track) }
+                                        : { vm.removeBuiltInTrack(track) }
+                                }
                             )
                             .fixedSize()
                             .help("\(option.label) (\(idx + 1))")
@@ -114,6 +118,7 @@ struct SubtitleListView: View {
         let label: String
         let mode: SubtitleMode
         var removeTrack: SubtitleTrack? = nil
+        var isExternal: Bool = true
 
         // Stable key derived from track IDs, not from the label which can change asynchronously
         var stableId: String {
@@ -130,15 +135,24 @@ struct SubtitleListView: View {
 
         var options: [TrackOption] = []
 
-        // 每条轨道独立显示为一个 chip，标签由语言检测决定
-        // 若某条轨道本身已包含双语内容，检测后会自动显示"双语"标签
-        for track in tracks where track.id > -100 {
-            options.append(TrackOption(label: vm.trackLabel(for: track), mode: .single(track)))
+        let builtInTracks  = tracks.filter { $0.id > -100 }
+        let externalTracks = tracks.filter { $0.id <= -100 }
+
+        // 收集外挂字幕的标签集合，用于检测名称冲突
+        let externalLabels = Set(externalTracks.map { vm.trackLabel(for: $0) })
+
+        // 内置轨道：始终带删除按钮；若与外挂字幕同名则加 "(内置)" 后缀
+        for track in builtInTracks {
+            let base  = vm.trackLabel(for: track)
+            let label = externalLabels.contains(base) ? "\(base)（内置）" : base
+            options.append(TrackOption(label: label, mode: .single(track),
+                                       removeTrack: track, isExternal: false))
         }
 
-        // 手动加载的外挂字幕（id <= -100），每个单独一个 chip，带删除按钮
-        for track in tracks where track.id <= -100 {
-            options.append(TrackOption(label: vm.trackLabel(for: track), mode: .single(track), removeTrack: track))
+        // 外挂字幕（id <= -100）：带删除按钮
+        for track in externalTracks {
+            options.append(TrackOption(label: vm.trackLabel(for: track), mode: .single(track),
+                                       removeTrack: track, isExternal: true))
         }
 
         return options
