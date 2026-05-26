@@ -816,7 +816,8 @@ class PlayerViewModel: ObservableObject {
 
         let outDir  = videoURL.deletingLastPathComponent()
         let stem    = videoURL.deletingPathExtension().lastPathComponent
-        let outSRT  = outDir.appendingPathComponent(stem + ".srt")
+        // 使用 .asr.srt 后缀而非 .srt，避免被 findCompanionTracks 当作内置伴随字幕重复加载
+        let outSRT  = outDir.appendingPathComponent(stem + ".asr.srt")
         // whisper-cli 只接受 WAV，先用 ffmpeg 提取为 16kHz 单声道
         let tempWAV = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".wav")
@@ -867,8 +868,9 @@ class PlayerViewModel: ObservableObject {
                     }
 
                     // Step 2: whisper-cli 识别
-                    // -of 指定输出前缀（不含扩展名），自动生成 <prefix>.srt
-                    let outPrefix = outDir.appendingPathComponent(stem).path
+                    // 输出前缀使用 stem.asr（不含最终扩展名），生成 stem.asr.srt
+                    // 避免与 findCompanionTracks 的 stem.srt 命名冲突，防止重复加载
+                    let outPrefix = outSRT.deletingPathExtension().path
                     let (wCode, wErr) = runSync(whisperCLI, [
                         "-m", modelPath,
                         "-f", tempWAV.path,
@@ -881,18 +883,17 @@ class PlayerViewModel: ObservableObject {
                         return
                     }
 
-                    // 优先检查预期路径 stem.srt；
-                    // whisper-cli 某些版本会附加语言码（如 stem.en.srt），做 fallback 扫描
+                    // 优先检查预期路径 stem.asr.srt；
+                    // whisper-cli 某些版本会再附加语言码（如 stem.asr.en.srt），做 fallback 扫描
                     if FileManager.default.fileExists(atPath: outSRT.path) {
                         continuation.resume(returning: .success(outSRT))
                         return
                     }
+                    let outPrefixName = outSRT.deletingPathExtension().lastPathComponent.lowercased()
                     let items = (try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? []
-                    let stemLower = stem.lowercased()
                     if let found = items.first(where: { name in
                         let lower = name.lowercased()
-                        return lower.hasSuffix(".srt") &&
-                               (lower == stemLower + ".srt" || lower.hasPrefix(stemLower + "."))
+                        return lower.hasSuffix(".srt") && lower.hasPrefix(outPrefixName)
                     }) {
                         continuation.resume(returning: .success(outDir.appendingPathComponent(found)))
                     } else {
@@ -932,11 +933,14 @@ class PlayerViewModel: ObservableObject {
                 await MainActor.run {
                     self.isTranscribing = false
                     self.transcribeStatus = ""
+                    // 仅在当前没有字幕显示时才 autoSelect，避免覆盖用户正在看的双语/其他轨道
+                    let noSubtitleNow = self.selectedMode == nil || self.subtitles.isEmpty
                     // 原始字幕先加载
-                    self.loadExternalSubtitle(from: actualSRT, autoSelect: finalBilingualURL == nil)
-                    // 双语字幕加载并选中
+                    self.loadExternalSubtitle(from: actualSRT,
+                                              autoSelect: noSubtitleNow && finalBilingualURL == nil)
+                    // 双语字幕加载（如果当前有字幕也不强制切换）
                     if let url = finalBilingualURL {
-                        self.loadExternalSubtitle(from: url, autoSelect: true)
+                        self.loadExternalSubtitle(from: url, autoSelect: noSubtitleNow)
                     }
                     // 在 Finder 中定位生成的 SRT 文件，方便用户找到
                     NSWorkspace.shared.activateFileViewerSelecting([actualSRT])
