@@ -1201,7 +1201,8 @@ class PlayerViewModel: ObservableObject {
             func buildArgs(videoCodec: String, audioCodec: String) -> [String] {
                 var args = ["-y", "-i", "file:\(videoURL.path)"]
                 for path in preparedSubPaths { args += ["-i", path] }
-                args += ["-map", "0"]
+                args += ["-map", "0"]       // 先映射源视频所有流
+                args += ["-map", "-0:s"]    // 再排除源视频的字幕流，避免保留旧内置字幕
                 for i in 1...preparedSubPaths.count { args += ["-map", "\(i):0"] }
                 args += ["-c:v", videoCodec, "-c:a", audioCodec, "-c:s", "srt", "file:\(finalOutURL.path)"]
                 return args
