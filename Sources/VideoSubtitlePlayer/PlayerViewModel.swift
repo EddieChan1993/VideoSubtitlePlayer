@@ -827,7 +827,8 @@ class PlayerViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
-            enum WhisperResult { case success; case failed(String) }
+            // success 携带实际找到的 SRT 路径（whisper-cli 有时附加语言码，如 stem.en.srt）
+            enum WhisperResult { case success(URL); case failed(String) }
 
             // 辅助：在同步上下文运行子进程并返回（退出码, stderr）
             func runSync(_ exe: String, _ args: [String]) -> (Int32, String) {
@@ -875,10 +876,27 @@ class PlayerViewModel: ObservableObject {
                         "-of", outPrefix
                     ])
 
-                    if wCode == 0, FileManager.default.fileExists(atPath: outSRT.path) {
-                        continuation.resume(returning: .success)
+                    guard wCode == 0 else {
+                        continuation.resume(returning: .failed(wErr.isEmpty ? "whisper-cli 异常退出（code \(wCode)）" : String(wErr.suffix(500))))
+                        return
+                    }
+
+                    // 优先检查预期路径 stem.srt；
+                    // whisper-cli 某些版本会附加语言码（如 stem.en.srt），做 fallback 扫描
+                    if FileManager.default.fileExists(atPath: outSRT.path) {
+                        continuation.resume(returning: .success(outSRT))
+                        return
+                    }
+                    let items = (try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? []
+                    let stemLower = stem.lowercased()
+                    if let found = items.first(where: { name in
+                        let lower = name.lowercased()
+                        return lower.hasSuffix(".srt") &&
+                               (lower == stemLower + ".srt" || lower.hasPrefix(stemLower + "."))
+                    }) {
+                        continuation.resume(returning: .success(outDir.appendingPathComponent(found)))
                     } else {
-                        continuation.resume(returning: .failed(wErr.isEmpty ? "whisper-cli 异常退出" : String(wErr.suffix(400))))
+                        continuation.resume(returning: .failed("识别完成但未找到输出 SRT 文件（已检查目录：\(outDir.path)）\n\n whisper-cli 输出：\(wErr.suffix(300))"))
                     }
                 }
             }
@@ -894,23 +912,42 @@ class PlayerViewModel: ObservableObject {
                     a.alertStyle = .warning
                     a.runModal()
                 }
-            case .success:
+
+            case .success(let actualSRT):
                 // 翻译生成双语 SRT
                 var bilingualURL: URL? = nil
+                var translateError: String? = nil
                 if bilingual {
                     await MainActor.run { self.transcribeStatus = "正在翻译字幕…" }
                     if #available(macOS 26, *) {
-                        bilingualURL = await self.translateSRT(at: outSRT, sourceLang: sourceLang, targetLang: targetLang)
+                        (bilingualURL, translateError) = await self.translateSRT(
+                            at: actualSRT, sourceLang: sourceLang, targetLang: targetLang)
+                    } else {
+                        translateError = "双语翻译需要 macOS 26 或更高版本"
                     }
                 }
+                // 用本地常量捕获，避免 Swift 6 对 var 的跨并发引用警告
+                let finalBilingualURL = bilingualURL
+                let finalTranslateError = translateError
                 await MainActor.run {
                     self.isTranscribing = false
                     self.transcribeStatus = ""
-                    // 原始字幕先加载（auto-select）
-                    self.loadExternalSubtitle(from: outSRT, autoSelect: bilingualURL == nil)
-                    // 双语字幕也加载（选中）
-                    if let bilingualURL {
-                        self.loadExternalSubtitle(from: bilingualURL, autoSelect: true)
+                    // 原始字幕先加载
+                    self.loadExternalSubtitle(from: actualSRT, autoSelect: finalBilingualURL == nil)
+                    // 双语字幕加载并选中
+                    if let url = finalBilingualURL {
+                        self.loadExternalSubtitle(from: url, autoSelect: true)
+                    }
+                    // 在 Finder 中定位生成的 SRT 文件，方便用户找到
+                    NSWorkspace.shared.activateFileViewerSelecting([actualSRT])
+
+                    // 双语翻译失败时提示原因
+                    if bilingual, finalBilingualURL == nil, let err = finalTranslateError {
+                        let a = NSAlert()
+                        a.messageText = "双语翻译未完成"
+                        a.informativeText = "\(err)\n\n已加载原始字幕，双语字幕未生成。"
+                        a.alertStyle = .informational
+                        a.runModal()
                     }
                 }
             }
@@ -941,18 +978,21 @@ class PlayerViewModel: ObservableObject {
         return blocks
     }
 
+    /// 返回 (译文SRT路径, 错误说明)；成功时错误为 nil
     @available(macOS 26, *)
-    private func translateSRT(at url: URL, sourceLang: String, targetLang: String) async -> URL? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+    private func translateSRT(at url: URL, sourceLang: String, targetLang: String) async -> (URL?, String?) {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            return (nil, "无法读取 SRT 文件")
+        }
         let blocks = parseSRTBlocks(content)
-        guard !blocks.isEmpty else { return nil }
+        guard !blocks.isEmpty else { return (nil, "SRT 解析结果为空") }
 
         // 每个 block 文本合并为单行送翻译（避免多行混淆）
         let texts = blocks.map { $0.text.replacingOccurrences(of: "\n", with: " ") }
 
-        let srcLang  = Locale.Language(identifier: sourceLang)
+        let srcLang   = Locale.Language(identifier: sourceLang)
         let dstLangId = targetLang == "zh" ? "zh-Hans" : targetLang
-        let dstLang  = Locale.Language(identifier: dstLangId)
+        let dstLang   = Locale.Language(identifier: dstLangId)
 
         // macOS 26 直接初始化 TranslationSession
         let session = TranslationSession(installedSource: srcLang, target: dstLang)
@@ -974,9 +1014,9 @@ class PlayerViewModel: ObservableObject {
             let outURL = url.deletingPathExtension()
                 .appendingPathExtension(targetLang + ".srt")
             try srt.write(to: outURL, atomically: true, encoding: .utf8)
-            return outURL
+            return (outURL, nil)
         } catch {
-            return nil
+            return (nil, "翻译框架错误：\(error.localizedDescription)\n\n请确认已在「系统设置 → 通用 → 语言与地区」下载所需语言包。")
         }
     }
 
