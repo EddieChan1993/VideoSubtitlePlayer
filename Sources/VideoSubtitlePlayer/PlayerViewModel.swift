@@ -737,6 +737,39 @@ class PlayerViewModel: ObservableObject {
             .first { FileManager.default.fileExists(atPath: $0) }
     }()
 
+    /// 用户手动导入的模型文件路径（持久化到 UserDefaults）
+    var whisperModelPath: String {
+        get { UserDefaults.standard.string(forKey: "whisper.modelPath") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "whisper.modelPath") }
+    }
+
+    /// 仅文件名，用于显示
+    var whisperModelFileName: String {
+        let p = whisperModelPath
+        guard !p.isEmpty else { return "" }
+        return URL(fileURLWithPath: p).lastPathComponent
+    }
+
+    /// 弹出文件选择器，让用户导入 .pt 模型文件（不拷贝，直接记录路径）
+    func importWhisperModel() {
+        let panel = NSOpenPanel()
+        panel.title = "选择 Whisper 模型文件（.pt）"
+        panel.message = "请选择 tiny / base / small / medium / large 等 .pt 格式文件"
+        panel.allowedContentTypes = [.init(filenameExtension: "pt") ?? .data]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        whisperModelPath = url.path
+        objectWillChange.send()
+    }
+
+    /// 移除当前记录的模型（不删除文件，只清空路径）
+    func removeWhisperModel() {
+        whisperModelPath = ""
+        objectWillChange.send()
+    }
+
     func transcribeAudio() {
         guard let videoURL else { return }
         guard let whisper = PlayerViewModel.whisperPath else {
@@ -747,10 +780,12 @@ class PlayerViewModel: ObservableObject {
             a.runModal()
             return
         }
+        let modelPath = whisperModelPath
+        guard !modelPath.isEmpty else { return }
 
-        let outDir  = videoURL.deletingLastPathComponent()
-        let stem    = videoURL.deletingPathExtension().lastPathComponent
-        let outSRT  = outDir.appendingPathComponent(stem + ".srt")
+        let outDir = videoURL.deletingLastPathComponent()
+        let stem   = videoURL.deletingPathExtension().lastPathComponent
+        let outSRT = outDir.appendingPathComponent(stem + ".srt")
 
         isTranscribing = true
         transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
@@ -758,11 +793,12 @@ class PlayerViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: whisper)
+            // whisper 的 load_model 会先检查参数是否为本地文件路径，存在即直接加载
             proc.arguments = [
                 videoURL.path,
                 "--output_format", "srt",
                 "--output_dir", outDir.path,
-                "--model", "small",
+                "--model", modelPath,
                 "--verbose", "False"
             ]
 

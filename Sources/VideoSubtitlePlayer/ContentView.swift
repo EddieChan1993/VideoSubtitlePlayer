@@ -23,6 +23,7 @@ struct ContentView: View {
     private var subColor:    Color { Color(red: subCR,  green: subCG,  blue: subCB)  }
     private var subSecColor: Color { Color(red: subSCR, green: subSCG, blue: subSCB) }
     @State private var showHistory = false
+    @State private var showTranscribePanel = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,11 +78,15 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: vm.transcribeAudio) {
+                    Button {
+                        showTranscribePanel.toggle()
+                    } label: {
                         Label("语音转字幕", systemImage: "waveform.badge.microphone")
                     }
-                    .help("使用 Whisper 将视频音频识别为字幕（需 openai-whisper，small 模型）")
-                    .disabled(vm.isTranscribing)
+                    .help("使用 Whisper 将视频音频识别为字幕")
+                    .popover(isPresented: $showTranscribePanel, arrowEdge: .bottom) {
+                        TranscribeSettingsView(vm: vm)
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: vm.exportSubtitlesAsCSV) {
@@ -965,5 +970,86 @@ final class _ResizeHandleNSView: NSView {
         let delta = event.locationInWindow.x - dragStartX
         let newWidth = min(maxWidth, max(minWidth, dragStartWidth - delta))
         DispatchQueue.main.async { [weak self] in self?.binding?.wrappedValue = newWidth }
+    }
+}
+
+// MARK: - Transcribe Settings Popover
+
+struct TranscribeSettingsView: View {
+    @ObservedObject var vm: PlayerViewModel
+    @AppStorage("whisper.modelPath") private var modelPath: String = ""
+    @Environment(\.dismiss) private var dismiss
+
+    private var modelFileName: String {
+        modelPath.isEmpty ? "" : URL(fileURLWithPath: modelPath).lastPathComponent
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("语音转字幕").font(.headline)
+            Divider()
+
+            // 当前模型行
+            HStack(spacing: 8) {
+                Text("当前模型")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if modelPath.isEmpty {
+                    Text("未导入")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    // 模型 Chip + 移除按钮
+                    HStack(spacing: 5) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(modelFileName)
+                            .font(.system(size: 11.5, weight: .medium))
+                        Button {
+                            vm.removeWhisperModel()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("移除当前模型（不删除文件）")
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color(.controlBackgroundColor)))
+                }
+            }
+
+            // 操作按钮行
+            HStack {
+                Button(modelPath.isEmpty ? "导入模型…" : "替换模型…") {
+                    vm.importWhisperModel()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer()
+
+                Button("开始识别") {
+                    dismiss()
+                    vm.transcribeAudio()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(modelPath.isEmpty || vm.isTranscribing)
+            }
+
+            Divider()
+
+            Text("支持 tiny / base / small / medium / large 等 .pt 格式\n生成的 SRT 保存至视频同目录并自动加载")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 300)
     }
 }
