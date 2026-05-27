@@ -439,6 +439,11 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 ## 变更记录
 
+### 2026-05-28
+- ♻️ 优化：字幕列表行左右边距收窄（`listRowInsets` leading/trailing 12/20 → 4/4，`SubtitleRow` 内部水平 padding 6 → 3）
+- ♻️ 优化：README 全面重写，按功能分组展示，居中标题 + 截图说明，更新预览截图为双语字幕效果图
+- 🆕 新增：README 版权声明章节（Copyright © 2026 EddieChan1993，禁止未经授权商业使用）
+
 ### 2026-05-27（续）
 - 🐛 修复：双语字幕翻译行（如 "Harry, 你想要什么？"）被 `splitLatinCJK` 再次切断为三行的问题；`splitLatinCJK` 新增 `pre.contains(" ")` 条件，单词名字前缀不再触发切分
 - 🐛 修复：`translateSRT()` 译文内部换行符（Translation.framework 返回 `\n`）导致 SRT 块多行/结构错误；折叠为空格后写入 SRT

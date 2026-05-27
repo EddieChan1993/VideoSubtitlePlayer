@@ -183,7 +183,7 @@ struct SubtitleListView: View {
                     SubtitleRow(subtitle: sub, isCurrent: vm.sidebarHighlightIndex == sub.id)
                         .contentShape(Rectangle())
                         .onTapGesture { vm.jumpToSubtitle(sub) }
-                        .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 20))
+                        .listRowInsets(EdgeInsets(top: 3, leading: 4, bottom: 3, trailing: 4))
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
@@ -339,7 +339,7 @@ struct SubtitleRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 5)
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 3)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isCurrent ? Color.accentColor.opacity(0.1) : Color.clear)
