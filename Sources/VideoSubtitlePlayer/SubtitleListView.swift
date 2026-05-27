@@ -260,7 +260,7 @@ struct TrackChip: View {
                     .contentShape(Circle().inset(by: -2))
                     .onHover { h in
                         xHovering = h
-                        if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
                     }
                     .onTapGesture { onRemove() }
             }
@@ -272,7 +272,7 @@ struct TrackChip: View {
         .contentShape(Capsule())
         .onTapGesture { action() }
         .onHover { h in
-            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
         }
     }
 }
@@ -298,7 +298,7 @@ struct HoverIconButton: View {
             .contentShape(Rectangle())
             .onHover { h in
                 hovering = h
-                if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
             }
             .onTapGesture { action() }
             .help(help)

@@ -13,6 +13,15 @@ struct Subtitle: Identifiable, Equatable {
         // ASS line-break codes that ffmpeg may preserve literally in SRT output
         s = s.replacingOccurrences(of: "\\N", with: "\n")
         s = s.replacingOccurrences(of: "\\n", with: "\n")
+        // Collapse newlines inside [...] annotations (e.g. "[\n音乐]" → "[音乐]")
+        var fixed = ""; var inBracket = false
+        for ch in s {
+            if ch == "[" { inBracket = true }
+            else if ch == "]" { inBracket = false }
+            if ch == "\n" && inBracket { continue }
+            fixed.append(ch)
+        }
+        s = fixed
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         // 同行英中拆分："English. 中文。" → "English.\n中文。"
         s = s.components(separatedBy: "\n").map(Self.splitLatinCJK).joined(separator: "\n")

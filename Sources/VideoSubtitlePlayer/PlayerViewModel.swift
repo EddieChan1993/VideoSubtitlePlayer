@@ -5,7 +5,7 @@ import SwiftUI
 import Translation
 #endif
 
-class PlayerViewModel: ObservableObject {
+class PlayerViewModel: ObservableObject, @unchecked Sendable {
     let player = AVPlayer()
 
     @Published var subtitles: [Subtitle] = []
@@ -847,6 +847,123 @@ class PlayerViewModel: ObservableObject {
                 return (p.terminationStatus, String(data: errBox.data, encoding: .utf8) ?? "")
             }
 
+            // 后处理：合并不以句末标点结尾的相邻段落，再按句子边界拆分并按字符比例分配时间。
+            // 解决 whisper 按字符数强制截断导致的跨句断行问题。
+            func mergeAndSplitBySentence(_ raw: String) -> String {
+                func parseTime(_ s: String) -> Double {
+                    let p = s.trimmingCharacters(in: .whitespaces)
+                        .components(separatedBy: CharacterSet(charactersIn: ":,"))
+                    guard p.count == 4,
+                          let h = Double(p[0]), let m = Double(p[1]),
+                          let sec = Double(p[2]), let ms = Double(p[3]) else { return 0 }
+                    return h * 3600 + m * 60 + sec + ms / 1000
+                }
+                func fmtTime(_ t: Double) -> String {
+                    let total = Int(max(0, t) * 1000)
+                    return String(format: "%02d:%02d:%02d,%03d",
+                                  total / 3600000, (total / 60000) % 60,
+                                  (total / 1000) % 60, total % 1000)
+                }
+                func endsWithSentence(_ t: String) -> Bool {
+                    let ch = t.trimmingCharacters(in: .whitespaces).last
+                    return ch == "." || ch == "?" || ch == "!"
+                }
+                // 按 ". A" / "? A" / "! A" 拆句，标点留在前句末尾
+                func splitSentences(_ text: String) -> [String] {
+                    var result: [String] = []
+                    var cur = ""
+                    var idx = text.startIndex
+                    while idx < text.endIndex {
+                        let ch = text[idx]
+                        cur.append(ch)
+                        if ch == "." || ch == "?" || ch == "!" {
+                            let ni = text.index(after: idx)
+                            if ni < text.endIndex, text[ni] == " " {
+                                let ai = text.index(after: ni)
+                                if ai < text.endIndex, text[ai].isUppercase {
+                                    result.append(cur.trimmingCharacters(in: .whitespaces))
+                                    cur = ""
+                                    idx = ai
+                                    continue
+                                }
+                            }
+                        }
+                        idx = text.index(after: idx)
+                    }
+                    let tail = cur.trimmingCharacters(in: .whitespaces)
+                    if !tail.isEmpty { result.append(tail) }
+                    return result.filter { !$0.isEmpty }
+                }
+
+                struct Block { var t0: Double; var t1: Double; var text: String }
+
+                // 解析所有 SRT 块
+                let normalized = raw
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\r", with: "\n")
+                var parsed: [Block] = []
+                for chunk in normalized.components(separatedBy: "\n\n") {
+                    let lines = chunk.components(separatedBy: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    guard !lines.isEmpty,
+                          let tsIdx = lines.firstIndex(where: { $0.contains("-->") }),
+                          tsIdx < lines.count - 1 else { continue }
+                    let tsParts = lines[tsIdx].components(separatedBy: " --> ")
+                    guard tsParts.count == 2 else { continue }
+                    let t0 = parseTime(tsParts[0])
+                    let t1 = parseTime(tsParts[1])
+                    let text = lines[(tsIdx + 1)...].joined(separator: " ")
+                    parsed.append(Block(t0: t0, t1: t1, text: text))
+                }
+
+                // 合并不以句末标点结尾的相邻块，直到遇到句末标点为止
+                var merged: [Block] = []
+                var accumText = ""
+                var accumT0: Double = 0
+                var accumT1: Double = 0
+                for block in parsed {
+                    if accumText.isEmpty {
+                        accumText = block.text
+                        accumT0 = block.t0
+                        accumT1 = block.t1
+                    } else {
+                        accumText += " " + block.text
+                        accumT1 = block.t1
+                    }
+                    if endsWithSentence(accumText) {
+                        merged.append(Block(t0: accumT0, t1: accumT1, text: accumText))
+                        accumText = ""
+                    }
+                }
+                if !accumText.isEmpty {
+                    merged.append(Block(t0: accumT0, t1: accumT1, text: accumText))
+                }
+
+                // 对每个完整句子块，按句子边界拆分并按字符比例分配时间
+                var out = ""
+                var newIdx = 1
+                for block in merged {
+                    let parts = splitSentences(block.text)
+                    if parts.count <= 1 {
+                        out += "\(newIdx)\n\(fmtTime(block.t0)) --> \(fmtTime(block.t1))\n\(block.text)\n\n"
+                        newIdx += 1
+                    } else {
+                        let totalChars = max(1, parts.reduce(0) { $0 + $1.count })
+                        let dur = block.t1 - block.t0
+                        var cur = block.t0
+                        for part in parts {
+                            let frac = Double(part.count) / Double(totalChars)
+                            let end = cur + dur * frac
+                            out += "\(newIdx)\n\(fmtTime(cur)) --> \(fmtTime(end))\n\(part)\n\n"
+                            newIdx += 1
+                            cur = end
+                        }
+                    }
+                }
+                return out
+            }
+
             let result: WhisperResult = await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
                     defer { try? FileManager.default.removeItem(at: tempWAV) }
@@ -876,8 +993,7 @@ class PlayerViewModel: ObservableObject {
                         "-f", tempWAV.path,
                         "-osrt",
                         "-of", outPrefix,
-                        "-ml", "42",   // 每段最多 42 字符，超出按内部时间戳切分
-                        "-sow"         // 按单词边界切，不截断词中间
+                        "-sow"   // 按单词边界切，不截断词中间；不限字符数，让 whisper 按音频停顿自然分段
                     ])
 
                     guard wCode == 0 else {
@@ -902,6 +1018,11 @@ class PlayerViewModel: ObservableObject {
                     }
 
                     if let url = foundSRT {
+                        // 后处理：合并跨句断行，再按句子边界重新分段
+                        if let raw = try? String(contentsOf: url, encoding: .utf8) {
+                            let processed = mergeAndSplitBySentence(raw)
+                            try? processed.write(to: url, atomically: true, encoding: .utf8)
+                        }
                         continuation.resume(returning: .success(url))
                     } else {
                         continuation.resume(returning: .failed("识别完成但未找到输出 SRT 文件（已检查目录：\(outDir.path)）\n\n whisper-cli 输出：\(wErr.suffix(300))"))
@@ -1043,6 +1164,17 @@ class PlayerViewModel: ObservableObject {
     }
 
     func convertToMKV() {
+        // 超过 2 条字幕轨道时拒绝转换并给出提示
+        if availableTracks.count > 2 {
+            let alert = NSAlert()
+            alert.messageText = "无法生成内嵌字幕视频"
+            alert.informativeText = "当前共有 \(availableTracks.count) 条字幕，内嵌功能最多支持 2 条。\n请先删除多余的字幕 Tab，再重试。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好的")
+            alert.runModal()
+            return
+        }
+
         guard let videoURL,
               let ffmpeg = SubtitleExtractor.ffmpegPath else { return }
 
@@ -1056,36 +1188,19 @@ class PlayerViewModel: ObservableObject {
             return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
         }
 
-        // ── 按来源把当前所有 tab 分为三类 ──────────────────────────────
-        //
-        //  1. embeddedSubTracks (id >= 0)      视频内部字幕流，ffmpeg 可用 0:s:N 直接映射
-        //  2. companionSubTracks (id < 0 && id > -100)  同目录伴随文件（video.srt 等）
-        //  3. externalSubTracks  (id <= -100)  用户手动加载的外挂文件
-        //
-        // 1 类无需额外输入，直接在 buildArgs 用 -map 0:s:{index} 指定；
-        // 2、3 类收集文件 URL，作为 ffmpeg 的额外输入流。
-
-        let embeddedSubTracks = availableTracks.filter { $0.id >= 0 }
-
-        var fileSubURLs: [URL] = []        // 文件型字幕（按 tab 顺序）
+        // 按用户 Tab 显示顺序取全部轨道（orderedModes 已按 chipOrder 排列）
+        let tracksSnapshot: [SubtitleTrack] = orderedModes.compactMap {
+            if case .single(let t) = $0 { return t } else { return nil }
+        }
         let videoDir = videoURL.deletingLastPathComponent()
-        for track in availableTracks {
-            if track.id < 0 && track.id > -100 {
-                // 伴随文件：track.title 即文件名
-                if let title = track.title {
-                    let url = videoDir.appendingPathComponent(title)
-                    if FileManager.default.fileExists(atPath: url.path) {
-                        fileSubURLs.append(url)
-                    }
-                }
-            } else if track.id <= -100 {
-                if let url = externalTrackURLs[track.id] { fileSubURLs.append(url) }
-            }
+
+        // 外挂字幕 URL 快照（主线程安全读取，避免 Task.detached 内跨并发域访问字典）
+        let externalURLSnapshot: [Int: URL] = tracksSnapshot.reduce(into: [:]) { dict, track in
+            guard track.id <= -100, let url = externalTrackURLs[track.id] else { return }
+            dict[track.id] = url
         }
 
-        guard !embeddedSubTracks.isEmpty || !fileSubURLs.isEmpty else { return }
-        let subURLs = fileSubURLs          // 传入 Task 供 prepareSubtitle 处理
-        let builtInTempFiles: [URL] = []   // 无需手动创建临时文件，嵌入流直接用 -map
+        guard !tracksSnapshot.isEmpty else { return }
 
         // 确认弹窗
         let confirm = NSAlert()
@@ -1241,24 +1356,51 @@ class PlayerViewModel: ObservableObject {
                 print("[sub] \(url.lastPathComponent) → 标准化 UTF-8 临时文件")
                 return tmp.path
             }
-            let preparedSubPaths = subURLs.map { prepareSubtitle($0) }
+            // 按 Tab 顺序统一收集字幕 URL（内嵌/伴随/外挂都在同一个循环里处理）
+            var allSubURLs: [URL] = []
+            for track in tracksSnapshot {
+                if track.id >= 0 {
+                    // 内嵌流：用 ffmpeg 提取为临时 SRT
+                    let tmpSRT = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString + ".srt")
+                    let extractArgs = ["-y", "-i", "file:\(videoURL.path)",
+                                       "-map", "0:s:\(track.index)",
+                                       "-c:s", "srt", tmpSRT.path]
+                    let (ok, extractErr) = run(extractArgs)
+                    if ok {
+                        allSubURLs.append(tmpSRT)
+                        tempSubFiles.append(tmpSRT)
+                    } else {
+                        print("[ffmpeg] 提取内嵌字幕流 s:\(track.index) 失败：\(extractErr.suffix(200))")
+                    }
+                } else if track.id > -100 {
+                    // 伴随文件（id -1 ~ -99）：按文件名在视频目录查找
+                    if let title = track.title {
+                        let url = videoDir.appendingPathComponent(title)
+                        if FileManager.default.fileExists(atPath: url.path) { allSubURLs.append(url) }
+                    }
+                } else {
+                    // 外挂字幕（id <= -100）：使用主线程预收集的快照
+                    if let url = externalURLSnapshot[track.id] { allSubURLs.append(url) }
+                }
+            }
+            print("[convert] 字幕轨道数：共=\(allSubURLs.count)（按 Tab 顺序）")
 
-            // 构建 ffmpeg 输入和 map 参数：input 0 = 视频，input 1..N = 字幕
-            // 视频路径用 file: 前缀处理 [ ] 等特殊字符；字幕已为临时文件，直接用绝对路径
+            guard !allSubURLs.isEmpty else {
+                tempSubFiles.forEach { try? FileManager.default.removeItem(at: $0) }
+                await MainActor.run { self.isConverting = false; self.convertingStatus = "" }
+                return
+            }
+
+            let preparedSubPaths = allSubURLs.map { prepareSubtitle($0) }
+
+            // 构建 ffmpeg 输入和 map 参数：input 0 = 视频，input 1..N = 字幕（全部文件）
             func buildArgs(videoCodec: String, audioCodec: String) -> [String] {
                 var args = ["-y", "-i", "file:\(videoURL.path)"]
                 for path in preparedSubPaths { args += ["-i", path] }
-
-                // 精确映射：只保留视音频，字幕流由下面逐一控制
                 args += ["-map", "0:V"]   // 所有视频流
                 args += ["-map", "0:a?"]  // 所有音频流（? = 无音频时不报错）
-
-                // 仍在 tab 里的内嵌字幕流：用字幕相对索引映射
-                for track in embeddedSubTracks {
-                    args += ["-map", "0:s:\(track.index)"]
-                }
-                // 文件型字幕（companion + 外挂）：各自作为独立输入流
-                for i in 1...max(1, preparedSubPaths.count) where i <= preparedSubPaths.count {
+                for i in 1...preparedSubPaths.count {
                     args += ["-map", "\(i):0"]
                 }
                 args += ["-c:v", videoCodec, "-c:a", audioCodec, "-c:s", "srt", "file:\(finalOutURL.path)"]
@@ -1306,7 +1448,6 @@ class PlayerViewModel: ObservableObject {
             }
 
             tempSubFiles.forEach { try? FileManager.default.removeItem(at: $0) }
-            builtInTempFiles.forEach { try? FileManager.default.removeItem(at: $0) }
 
             await MainActor.run {
                 self.isConverting = false

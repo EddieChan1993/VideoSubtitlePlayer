@@ -123,6 +123,7 @@ xattr -rd com.apple.quarantine SubMelon-xxx.app
 | `Z` | 折叠 / 展开侧边栏 |
 | `1` / `2` / `3` | 切换字幕轨道（顺序随 Chip 拖拽排序） |
 | `Space` | 播放 / 暂停 |
+| 双击视频 | 播放 / 暂停 |
 | `⌘O` | 打开视频文件 |
 
 ---

@@ -439,6 +439,22 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 ## 变更记录
 
+### 2026-05-27
+- 🆕 新增：双击视频画面切换播放/暂停
+- 🐛 修复：字幕中 `[音乐]` 等括号注释跨行断开问题（`cleanText` 折叠括号内换行符）
+- 🐛 修复：MKV 字幕内嵌超过 2 个 Tab 时弹窗拒绝，按钮始终可见不消失
+- 🐛 修复：MKV 内嵌按用户 Tab 显示顺序统一处理所有来源（内嵌/伴随/外挂），不再把外挂固定追加到末尾
+- 🐛 修复：Whisper 语音识别断句问题（`mergeAndSplitBySentence` 后处理，去掉 `-ml 42` 强制截断）
+- ♻️ 优化：`PlayerViewModel` 加 `@unchecked Sendable`，消除 Swift 6 并发警告
+- ♻️ 优化：NSCursor `push()/pop()` 全部改为 `.set()`，修复 tooltip 显示时光标从手指变回箭头的问题
+- ♻️ 优化：TranscribeSettingsView UI 重构
+  - Toggle 改为 checkbox 样式，去掉 iOS 风格蓝色粗条
+  - 语言选择行去掉"源语言"文字和箭头，两个 Picker 居中排列
+  - "当前模型"改为"Whisper 模型"白色标题，前置可点击 link icon 跳转官方模型下载页
+  - 删除"替换模型"按钮，点击 chip 文字区域直接替换模型，chip 移除焦点蓝框
+  - "开始识别"按钮改为全宽
+  - 删除底部 ggml 格式提示文字
+
 ### 2026-05-26
 - 🆕 新增：音量默认 30% 并通过 UserDefaults 持久化，重启后保留上次音量
 - 🆕 新增：Whisper 语音转字幕功能（whisper-cli + ffmpeg pipeline，手动导入 `.bin` 模型，转录后自动加载字幕）

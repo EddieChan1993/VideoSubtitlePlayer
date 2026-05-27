@@ -167,6 +167,10 @@ struct ContentView: View {
                 }
                 .frame(minWidth: 420, minHeight: 280)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onTapGesture(count: 2) {
+                    guard vm.isVideoLoaded else { return }
+                    vm.togglePlayPause()
+                }
 
                 if vm.showSidebar {
                     SidebarResizeHandle(sidebarWidth: $sidebarWidth, minWidth: 240, maxWidth: 480)
@@ -740,7 +744,7 @@ struct HistoryPanelView: View {
             .buttonStyle(.plain)
             .onHover { h in
                 clearHovering = h
-                if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
             }
         }
         .frame(width: 280)
@@ -807,7 +811,7 @@ struct HistoryPopoverView: View {
                 .buttonStyle(.plain)
                 .onHover { h in
                     clearHovering = h
-                    if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
                 }
             }
         }
@@ -866,7 +870,7 @@ struct HistoryRowView: View {
         .contentShape(Rectangle())
         .onHover { h in
             hovering = h
-            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
         }
         .onTapGesture { onOpen() }
         .task(id: entry.videoPath) {
@@ -894,7 +898,7 @@ private struct DeleteButton: View {
         .buttonStyle(.plain)
         .onHover { h in
             hovering = h
-            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
         }
     }
 }
@@ -998,64 +1002,75 @@ struct TranscribeSettingsView: View {
             Text("语音转字幕").font(.headline)
             Divider()
 
-            // ── 模型行 ───────────────────────────────────────────────
+            // ── 模型行（点击 chip 文字区域可更换模型）────────────────
             HStack(spacing: 8) {
-                Text("当前模型").font(.callout).foregroundStyle(.secondary)
+                // 链接 icon → 打开 Whisper 模型官方下载页
+                Button {
+                    NSWorkspace.shared.open(URL(string: "https://huggingface.co/ggerganov/whisper.cpp")!)
+                } label: {
+                    Image(systemName: "link.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .help("点击打开 Whisper 模型官方下载页")
+                .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
+
+                Text("Whisper 模型").font(.callout).foregroundStyle(.white)
                 Spacer()
                 if modelPath.isEmpty {
-                    Text("未导入").font(.callout).foregroundStyle(.tertiary)
+                    Button(action: { showFilePicker = true }) {
+                        Text("点击导入…")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 9).padding(.vertical, 4)
+                            .background(Capsule().fill(Color(.controlBackgroundColor)))
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
                 } else {
-                    TranscribeModelChip(name: modelFileName) { vm.removeWhisperModel() }
+                    TranscribeModelChip(name: modelFileName,
+                                        onReplace: { showFilePicker = true },
+                                        onRemove:  { vm.removeWhisperModel() })
                 }
             }
 
             // ── 双语字幕（macOS 26+ Translation 框架）────────────────
             if #available(macOS 26, *) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Toggle("生成双语字幕", isOn: $enableBilingual)
-                            .toggleStyle(.switch).controlSize(.mini).font(.callout)
-                    }
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("生成双语字幕", isOn: $enableBilingual)
+                        .toggleStyle(.checkbox).font(.callout)
                     if enableBilingual {
-                        HStack(spacing: 6) {
-                            Text("源语言").font(.caption).foregroundStyle(.secondary).frame(width: 40, alignment: .leading)
+                        HStack(spacing: 8) {
                             Picker("", selection: $sourceLang) {
                                 ForEach(langOptions, id: \.code) { Text($0.name).tag($0.code) }
-                            }.labelsHidden().frame(width: 72).controlSize(.small)
-                            Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                            }.labelsHidden().frame(width: 80).controlSize(.small)
                             Text("译为").font(.caption).foregroundStyle(.secondary)
                             Picker("", selection: $targetLang) {
                                 ForEach(langOptions, id: \.code) { Text($0.name).tag($0.code) }
-                            }.labelsHidden().frame(width: 72).controlSize(.small)
+                            }.labelsHidden().frame(width: 80).controlSize(.small)
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }
 
-            // ── 操作按钮 ─────────────────────────────────────────────
-            HStack(spacing: 8) {
-                TranscribePopoverButton(modelPath.isEmpty ? "导入模型…" : "替换模型…") {
-                    showFilePicker = true          // 不 dismiss，保持弹窗开启
-                }
-                Spacer()
-                TranscribePopoverButton(
-                    "开始识别",
-                    isPrimary: true,
-                    disabled: modelPath.isEmpty || vm.isTranscribing
-                ) {
-                    dismiss()
-                    if #available(macOS 26, *) {
-                        vm.transcribeAudio(bilingual: enableBilingual, sourceLang: sourceLang, targetLang: targetLang)
-                    } else {
-                        vm.transcribeAudio()
-                    }
+            // ── 操作按钮（全宽）──────────────────────────────────────
+            TranscribePopoverButton(
+                "开始识别",
+                isPrimary: true,
+                disabled: modelPath.isEmpty || vm.isTranscribing,
+                fullWidth: true
+            ) {
+                dismiss()
+                if #available(macOS 26, *) {
+                    vm.transcribeAudio(bilingual: enableBilingual, sourceLang: sourceLang, targetLang: targetLang)
+                } else {
+                    vm.transcribeAudio()
                 }
             }
 
-            Divider()
-            Text("支持 ggml-tiny / small / medium / large 等 .bin 格式\n生成的 SRT 保存至视频同目录并自动加载")
-                .font(.caption).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
         .frame(width: 310)
@@ -1078,20 +1093,32 @@ struct TranscribeSettingsView: View {
 // 模型文件名 Chip（带 ✕ 移除）
 private struct TranscribeModelChip: View {
     let name: String
+    let onReplace: () -> Void
     let onRemove: () -> Void
     @State private var xHover = false
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "cpu").font(.system(size: 10)).foregroundStyle(.secondary)
-            Text(name).font(.system(size: 11.5, weight: .medium))
+            // 点击图标+文字区域 → 更换模型
+            Button(action: onReplace) {
+                HStack(spacing: 4) {
+                    Image(systemName: "cpu").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(name).font(.system(size: 11.5, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .help("点击更换模型")
+            .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
+
+            // X → 删除模型
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(xHover ? Color.primary : Color.secondary)
                 .padding(3)
                 .background(Circle().fill(xHover ? Color(.controlColor) : Color.clear))
                 .contentShape(Circle().inset(by: -2))
-                .onHover { h in xHover = h; if h { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+                .onHover { h in xHover = h; if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
                 .onTapGesture { onRemove() }
         }
         .padding(.horizontal, 9).padding(.vertical, 4)
@@ -1102,13 +1129,14 @@ private struct TranscribeModelChip: View {
 // 带 hover / press 效果的通用弹窗按钮
 struct TranscribePopoverButton: View {
     let label: String
-    var isPrimary: Bool = false
-    var disabled: Bool  = false
+    var isPrimary: Bool  = false
+    var disabled: Bool   = false
+    var fullWidth: Bool  = false
     let action: () -> Void
     @State private var isHovered = false
 
-    init(_ label: String, isPrimary: Bool = false, disabled: Bool = false, action: @escaping () -> Void) {
-        self.label = label; self.isPrimary = isPrimary; self.disabled = disabled; self.action = action
+    init(_ label: String, isPrimary: Bool = false, disabled: Bool = false, fullWidth: Bool = false, action: @escaping () -> Void) {
+        self.label = label; self.isPrimary = isPrimary; self.disabled = disabled; self.fullWidth = fullWidth; self.action = action
     }
 
     var body: some View {
@@ -1116,6 +1144,7 @@ struct TranscribePopoverButton: View {
             Text(label)
                 .font(.system(size: 12.5, weight: isPrimary ? .semibold : .regular))
                 .foregroundStyle(fgColor)
+                .frame(maxWidth: fullWidth ? .infinity : nil)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(bgColor))
                 .overlay(
@@ -1127,7 +1156,7 @@ struct TranscribePopoverButton: View {
         .disabled(disabled)
         .onHover { h in
             isHovered = !disabled && h
-            if h && !disabled { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if h && !disabled { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
         }
     }
 
