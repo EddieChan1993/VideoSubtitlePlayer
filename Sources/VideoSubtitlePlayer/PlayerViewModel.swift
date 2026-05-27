@@ -60,6 +60,9 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
     private var externalTrackURLs: [Int: URL] = [:]
     private var nextExternalTrackId = -100
     private var extractionTask: Task<Void, Never>?
+    private var transcribeTask: Task<Void, Never>?
+    private var currentTranscribeProcess: Process?
+    private var transcribeCancelled = false
 
 
 
@@ -800,6 +803,17 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         objectWillChange.send()
     }
 
+    /// 取消正在进行的语音识别（终止 ffmpeg / whisper-cli 子进程）
+    func cancelTranscribeAudio() {
+        transcribeCancelled = true
+        currentTranscribeProcess?.terminate()
+        currentTranscribeProcess = nil
+        transcribeTask?.cancel()
+        transcribeTask = nil
+        isTranscribing = false
+        transcribeStatus = ""
+    }
+
     func transcribeAudio(bilingual: Bool = false, sourceLang: String = "en", targetLang: String = "zh") {
         guard let videoURL else { return }
         guard let whisperCLI = PlayerViewModel.whisperPath else {
@@ -824,8 +838,9 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
 
         isTranscribing = true
         transcribeStatus = "正在提取音频…"
+        transcribeCancelled = false
 
-        Task { [weak self] in
+        transcribeTask = Task { [weak self] in
             guard let self else { return }
 
             // success 携带实际找到的 SRT 路径（whisper-cli 有时附加语言码，如 stem.en.srt）
@@ -843,7 +858,9 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                 g.enter(); DispatchQueue.global().async { errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile()); g.leave() }
                 g.enter(); DispatchQueue.global().async { _ = outPipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
                 guard (try? p.run()) != nil else { g.wait(); return (-1, "launch failed") }
+                self.currentTranscribeProcess = p   // 暴露给 cancelTranscribeAudio
                 p.waitUntilExit(); g.wait()
+                self.currentTranscribeProcess = nil
                 return (p.terminationStatus, String(data: errBox.data, encoding: .utf8) ?? "")
             }
 
@@ -1035,6 +1052,7 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                 await MainActor.run {
                     self.isTranscribing = false
                     self.transcribeStatus = ""
+                    guard !self.transcribeCancelled else { return }  // 用户主动取消，不弹错误弹窗
                     let a = NSAlert()
                     a.messageText = "语音识别失败"
                     a.informativeText = err
@@ -1136,7 +1154,9 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
             var srt = ""
             for (i, block) in blocks.enumerated() {
                 let translation = i < responses.count
-                    ? responses[i].targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ? responses[i].targetText
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "\n", with: " ")   // 译文内部换行折叠为空格，避免破坏 SRT 块结构
                     : ""
                 srt += "\(block.index)\n\(block.timing)\n\(block.text)"
                 if !translation.isEmpty { srt += "\n\(translation)" }

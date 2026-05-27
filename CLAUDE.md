@@ -439,6 +439,12 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 ## 变更记录
 
+### 2026-05-27（续）
+- 🐛 修复：双语字幕翻译行（如 "Harry, 你想要什么？"）被 `splitLatinCJK` 再次切断为三行的问题；`splitLatinCJK` 新增 `pre.contains(" ")` 条件，单词名字前缀不再触发切分
+- 🐛 修复：`translateSRT()` 译文内部换行符（Translation.framework 返回 `\n`）导致 SRT 块多行/结构错误；折叠为空格后写入 SRT
+- 🆕 新增：语音识别可中途取消；`cancelTranscribeAudio()` 终止当前 ffmpeg / whisper-cli 子进程并清空状态，取消后不弹错误弹窗
+- ♻️ 优化：识别中的取消按钮改为带红色 hover 动效的叉号 icon（`TranscribeCancelButton`），支持 press 缩放、手形光标、tooltip
+
 ### 2026-05-27
 - 🐛 修复：过滤 Whisper 输出的说话人标记（行首 `>>` / `>`），在 `cleanText` 统一处理
 - 🆕 新增：删除字幕 Tab 时弹出确认对话框，防止误删

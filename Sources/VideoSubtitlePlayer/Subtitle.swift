@@ -26,8 +26,34 @@ struct Subtitle: Identifiable, Equatable {
         // 去掉 Whisper 说话人标记（行首 >> 或 > ）
         s = s.replacingOccurrences(of: #"^>>?\s*"#, with: "", options: [.regularExpression, .anchored])
         s = s.replacingOccurrences(of: #"\n>>?\s*"#, with: "\n", options: .regularExpression)
-        // 同行英中拆分："English. 中文。" → "English.\n中文。"
-        s = s.components(separatedBy: "\n").map(Self.splitLatinCJK).joined(separator: "\n")
+        // 合并跨行的中文翻译：若某行无 CJK 且不以句终符结尾，而下一行以 CJK 开头，则拼接
+        // 例："Harry Bennett,\n注册会计师。" → "Harry Bennett, 注册会计师。"
+        // 合并后的行跳过 splitLatinCJK，防止被再次拆开（如 "SomSak's 欢迎..." 又被切成两行）
+        let sentenceEnders: Set<Character> = [".", "?", "!", "。", "！", "？"]
+        func hasCJK(_ line: String) -> Bool {
+            line.unicodeScalars.contains { $0.value >= 0x4E00 && $0.value <= 0x9FFF }
+        }
+        let rawLines = s.components(separatedBy: "\n")
+        var mergedLines: [String] = []
+        var mergedSet: Set<Int> = []
+        var idx = 0
+        while idx < rawLines.count {
+            let line = rawLines[idx]
+            if !hasCJK(line),
+               let last = line.last, !sentenceEnders.contains(last),
+               idx + 1 < rawLines.count, hasCJK(rawLines[idx + 1]) {
+                mergedSet.insert(mergedLines.count)
+                mergedLines.append(line + " " + rawLines[idx + 1])
+                idx += 2
+            } else {
+                mergedLines.append(line)
+                idx += 1
+            }
+        }
+        // 同行英中拆分："English. 中文。" → "English.\n中文。"（合并行跳过，避免被再次切开）
+        s = mergedLines.enumerated().map { i, line in
+            mergedSet.contains(i) ? line : Self.splitLatinCJK(line)
+        }.joined(separator: "\n")
         return s
     }
 
@@ -41,7 +67,9 @@ struct Subtitle: Identifiable, Equatable {
         let latinCount = pre.unicodeScalars.filter {
             ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122)
         }.count
-        guard latinCount >= 3, suf.count >= 2 else { return line }
+        // 前缀必须含空格（即至少两个词）才切分；
+        // 单词名字如 "Harry," 不满足，不切，避免翻译行 "Harry, 你想要什么？" 被错误拆开。
+        guard latinCount >= 3, suf.count >= 2, pre.contains(" ") else { return line }
         return pre + "\n" + suf
     }
 

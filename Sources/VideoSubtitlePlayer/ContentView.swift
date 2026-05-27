@@ -301,12 +301,46 @@ struct ContentView: View {
                 Text(vm.transcribeStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                TranscribeCancelButton { vm.cancelTranscribeAudio() }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(.regularMaterial, in: Capsule())
             .padding(.top, 12)
             Spacer()
+        }
+    }
+
+    private struct TranscribeCancelButton: View {
+        let action: () -> Void
+        @State private var hovering = false
+        @State private var pressing = false
+
+        var body: some View {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(hovering ? Color.white : Color.secondary)
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle()
+                        .fill(hovering
+                              ? (pressing ? Color.red.opacity(0.75) : Color.red.opacity(0.85))
+                              : Color.secondary.opacity(0.2))
+                )
+                .scaleEffect(pressing ? 0.88 : 1.0)
+                .animation(.spring(duration: 0.15), value: hovering)
+                .animation(.spring(duration: 0.1), value: pressing)
+                .contentShape(Circle())
+                .onHover { h in
+                    hovering = h
+                    if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+                }
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in pressing = true }
+                        .onEnded   { _ in pressing = false; action() }
+                )
+                .help("取消识别")
         }
     }
 
