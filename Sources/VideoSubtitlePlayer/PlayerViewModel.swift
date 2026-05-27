@@ -1157,9 +1157,12 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
 
     /// 当前有任意字幕 tab（且有数据）时显示转换按钮
     var canConvertToMKV: Bool {
+        // 只有存在非内嵌轨道（外挂/伴随文件）时才允许转换；
+        // 全部都是视频原有内嵌字幕（id >= 0）时按钮保持制灰，转换无意义。
         availableTracks.contains { track in
+            guard track.id < 0 else { return false }
             if track.id <= -100 { return externalTrackURLs[track.id] != nil }
-            return subtitleCache[.single(track)] != nil
+            return true   // 伴随文件（id -1 ~ -99）只要识别到就视为有效
         }
     }
 

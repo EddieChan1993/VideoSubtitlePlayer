@@ -31,9 +31,22 @@ struct SubtitleListView: View {
                                 isSelected: option.mode == vm.selectedMode,
                                 action: { vm.selectMode(option.mode) },
                                 onRemove: option.removeTrack.map { track in
-                                    option.isExternal
-                                        ? { vm.removeExternalTrack(track) }
-                                        : { vm.removeBuiltInTrack(track) }
+                                    let label = option.label
+                                    let isExternal = option.isExternal
+                                    return {
+                                        let alert = NSAlert()
+                                        alert.messageText = "删除字幕"
+                                        alert.informativeText = "确定要删除「\(label)」吗？"
+                                        alert.alertStyle = .warning
+                                        alert.addButton(withTitle: "删除")
+                                        alert.addButton(withTitle: "取消")
+                                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                                        if isExternal {
+                                            vm.removeExternalTrack(track)
+                                        } else {
+                                            vm.removeBuiltInTrack(track)
+                                        }
+                                    }
                                 }
                             )
                             .fixedSize()

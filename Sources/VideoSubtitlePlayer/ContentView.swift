@@ -69,13 +69,12 @@ struct ContentView: View {
                         }
                     }
                 }
-                if vm.canConvertToMKV {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(action: vm.convertToMKV) {
-                            Label("内嵌字幕", systemImage: "arrow.down.doc")
-                        }
-                        .help("将外挂字幕内嵌进视频，生成 MKV 文件")
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: vm.convertToMKV) {
+                        Label("内嵌字幕", systemImage: "arrow.down.doc")
                     }
+                    .help("将外挂字幕内嵌进视频，生成 MKV 文件")
+                    .disabled(!vm.canConvertToMKV)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
