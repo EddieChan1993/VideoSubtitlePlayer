@@ -179,7 +179,7 @@ xattr -rd com.apple.quarantine SubMelon-xxx.app
 
 ## 版权声明
 
-Copyright © 2026 DC_Wen. All rights reserved.
+Copyright © 2026 EddieChan1993. All rights reserved.
 
 本软件（SubMelon）及其源代码受版权法保护。
 
