@@ -23,6 +23,9 @@ struct Subtitle: Identifiable, Equatable {
         }
         s = fixed
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 去掉 Whisper 说话人标记（行首 >> 或 > ）
+        s = s.replacingOccurrences(of: #"^>>?\s*"#, with: "", options: [.regularExpression, .anchored])
+        s = s.replacingOccurrences(of: #"\n>>?\s*"#, with: "\n", options: .regularExpression)
         // 同行英中拆分："English. 中文。" → "English.\n中文。"
         s = s.components(separatedBy: "\n").map(Self.splitLatinCJK).joined(separator: "\n")
         return s
