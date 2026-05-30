@@ -439,6 +439,9 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 ## 变更记录
 
+### 2026-05-30
+- 🐛 修复：Whisper 模型下载链接改为 `/tree/main`，直接显示文件列表，方便用户选择下载
+
 ### 2026-05-28
 - ♻️ 优化：字幕列表行左右边距收窄（`listRowInsets` leading/trailing 12/20 → 4/4，`SubtitleRow` 内部水平 padding 6 → 3）
 - ♻️ 优化：README 全面重写，按功能分组展示，居中标题 + 截图说明，更新预览截图为双语字幕效果图

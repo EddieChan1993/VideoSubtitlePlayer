@@ -1039,18 +1039,18 @@ struct TranscribeSettingsView: View {
             HStack(spacing: 8) {
                 // 链接 icon → 打开 Whisper 模型官方下载页
                 Button {
-                    NSWorkspace.shared.open(URL(string: "https://huggingface.co/ggerganov/whisper.cpp")!)
+                    NSWorkspace.shared.open(URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
                 } label: {
                     Image(systemName: "link.circle")
                         .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
                 .help("点击打开 Whisper 模型官方下载页")
                 .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
 
-                Text("Whisper 模型").font(.callout).foregroundStyle(.white)
+                Text("Whisper 模型").font(.callout).foregroundStyle(.primary)
                 Spacer()
                 if modelPath.isEmpty {
                     Button(action: { showFilePicker = true }) {
