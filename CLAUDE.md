@@ -439,6 +439,10 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 
 ## 变更记录
 
+### 2026-05-31
+- 🐛 修复：加载新视频后首次翻译失败问题；`translateSRT()` 在调用 `translations(from:)` 前先调用 `prepareTranslation()` 预热语言包，并在首次失败时等待 0.5 秒自动重试一次
+- 🐛 修复：Whisper 语音识别对音乐段落产生幻觉重复字幕；新增两步过滤：① 全局统计相同文本出现 ≥ 3 次则全部删除；② 滑动窗口（前 6 条）相似度 ≥ 85% 则丢弃，彻底消除重复幻觉条目
+
 ### 2026-05-30
 - 🐛 修复：Whisper 模型下载链接改为 `/tree/main`，直接显示文件列表，方便用户选择下载
 

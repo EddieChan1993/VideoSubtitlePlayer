@@ -934,12 +934,48 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                     parsed.append(Block(t0: t0, t1: t1, text: text))
                 }
 
+                // 过滤 Whisper 幻觉：去掉与前几条文本高度相似的重复块
+                func normalize(_ s: String) -> String {
+                    s.lowercased()
+                     .components(separatedBy: .punctuationCharacters).joined()
+                     .components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined(separator: " ")
+                }
+                func similarity(_ a: String, _ b: String) -> Double {
+                    let na = normalize(a), nb = normalize(b)
+                    guard !na.isEmpty, !nb.isEmpty else { return 0 }
+                    if na == nb { return 1.0 }
+                    // 检查包含关系（一方是另一方的子串）
+                    if na.contains(nb) || nb.contains(na) { return 0.9 }
+                    // 简单词级 Jaccard
+                    let wa = Set(na.components(separatedBy: " "))
+                    let wb = Set(nb.components(separatedBy: " "))
+                    let inter = wa.intersection(wb).count
+                    let union = wa.union(wb).count
+                    return union == 0 ? 0 : Double(inter) / Double(union)
+                }
+                let threshold = 0.85 // 相似度阈值
+
+                // 第一步：全局统计，出现 3 次及以上的文本全部删除（连第一条也删）
+                var normCount: [String: Int] = [:]
+                for block in parsed { normCount[normalize(block.text), default: 0] += 1 }
+                let globalFiltered = parsed.filter { normCount[normalize($0.text), default: 0] < 3 }
+
+                // 第二步：相邻滑动窗口过滤，兜底去掉只重复 1~2 次的幻觉
+                let windowSize = 6
+                var filtered: [Block] = []
+                for block in globalFiltered {
+                    let recent = filtered.suffix(windowSize)
+                    let isHallucination = recent.contains { similarity($0.text, block.text) >= threshold }
+                    if !isHallucination { filtered.append(block) }
+                }
+                let deduped = filtered
+
                 // 合并不以句末标点结尾的相邻块，直到遇到句末标点为止
                 var merged: [Block] = []
                 var accumText = ""
                 var accumT0: Double = 0
                 var accumT1: Double = 0
-                for block in parsed {
+                for block in deduped {
                     if accumText.isEmpty {
                         accumText = block.text
                         accumT0 = block.t0
@@ -1010,7 +1046,7 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                         "-f", tempWAV.path,
                         "-osrt",
                         "-of", outPrefix,
-                        "-sow"   // 按单词边界切，不截断词中间；不限字符数，让 whisper 按音频停顿自然分段
+                        "-sow"           // 按单词边界切，不截断词中间；让 whisper 按音频停顿自然分段
                     ])
 
                     guard wCode == 0 else {
@@ -1088,9 +1124,6 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                     if let url = finalBilingualURL {
                         self.loadExternalSubtitle(from: url, autoSelect: noSubtitleNow)
                     }
-                    // 在 Finder 中定位生成的 SRT 文件，方便用户找到
-                    NSWorkspace.shared.activateFileViewerSelecting([actualSRT])
-
                     // 双语翻译失败时提示原因
                     if bilingual, finalBilingualURL == nil, let err = finalTranslateError {
                         let a = NSAlert()
@@ -1147,9 +1180,19 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         // macOS 26 直接初始化 TranslationSession
         let session = TranslationSession(installedSource: srcLang, target: dstLang)
 
+        // 预热语言包，避免首次加载新视频时翻译失败（框架未就绪）
+        try? await session.prepareTranslation()
+
         do {
             let requests  = texts.map { TranslationSession.Request(sourceText: $0) }
-            let responses = try await session.translations(from: requests)
+            let responses: [TranslationSession.Response]
+            do {
+                responses = try await session.translations(from: requests)
+            } catch {
+                // 首次可能因语言包尚未完全初始化而失败，稍等后重试一次
+                try await Task.sleep(nanoseconds: 500_000_000)
+                responses = try await session.translations(from: requests)
+            }
 
             var srt = ""
             for (i, block) in blocks.enumerated() {
