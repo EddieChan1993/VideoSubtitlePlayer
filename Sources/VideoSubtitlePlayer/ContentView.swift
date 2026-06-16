@@ -734,6 +734,7 @@ struct HistoryPanelView: View {
     @ObservedObject private var history = VideoHistory.shared
     var onSelect: (HistoryEntry) -> Void
     @State private var clearHovering = false
+    @State private var showClearConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -764,7 +765,7 @@ struct HistoryPanelView: View {
             // Footer
             Divider()
             Button {
-                history.clearAll()
+                showClearConfirm = true
             } label: {
                 Text("清空全部")
                     .font(.system(size: 11))
@@ -779,6 +780,10 @@ struct HistoryPanelView: View {
                 clearHovering = h
                 if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
             }
+            .confirmationDialog("确定清空全部播放记录？", isPresented: $showClearConfirm) {
+                Button("清空全部", role: .destructive) { history.clearAll() }
+                Button("取消", role: .cancel) {}
+            }
         }
         .frame(width: 280)
         .background(.background)
@@ -791,6 +796,7 @@ struct HistoryPopoverView: View {
     @ObservedObject var history: VideoHistory
     var onSelect: (HistoryEntry) -> Void
     @State private var clearHovering = false
+    @State private var showClearConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -831,7 +837,7 @@ struct HistoryPopoverView: View {
                     .fill(Color(.separatorColor))
                     .frame(height: 1)
                 Button {
-                    history.clearAll()
+                    showClearConfirm = true
                 } label: {
                     Text("清空全部")
                         .font(.system(size: 11))
@@ -845,6 +851,10 @@ struct HistoryPopoverView: View {
                 .onHover { h in
                     clearHovering = h
                     if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+                }
+                .confirmationDialog("确定清空全部播放记录？", isPresented: $showClearConfirm) {
+                    Button("清空全部", role: .destructive) { history.clearAll() }
+                    Button("取消", role: .cancel) {}
                 }
             }
         }
