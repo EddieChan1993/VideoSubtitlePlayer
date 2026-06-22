@@ -168,6 +168,7 @@ final class MPVController {
         opt("quiet",  "msg-level")
         opt("libmpv", "vo")
         opt("no",     "sub-visibility")
+        opt("yes",    "audio-stream-silence")  // seek 后保持音频输出开启，避免 CoreAudio 重新初始化导致的短暂静音
 
         guard fn_init?(mpvCtx) == 0 else { return false }
 
