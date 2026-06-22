@@ -93,6 +93,26 @@ else
     echo "   将为 ${#APPLE_IDS[@]} 个 Apple ID 打包：${APPLE_IDS[*]}"
 fi
 
+# ── 依赖检查（缺少任一项立即报错退出）────────────────────────────────────────
+echo "▶  检查构建依赖…"
+MISSING=""
+
+command -v swift   &>/dev/null || MISSING="$MISSING\n  xcode-select --install   # Swift 工具链"
+command -v ffmpeg  &>/dev/null || MISSING="$MISSING\n  brew install ffmpeg      # 字幕提取 / 音频提取"
+command -v iconutil &>/dev/null || MISSING="$MISSING\n  xcode-select --install   # iconutil（Xcode Command Line Tools）"
+
+# libmpv.dylib（打包进 .app 的核心视频解码库）
+if ! find /opt/homebrew/lib /usr/local/lib -name "libmpv*.dylib" 2>/dev/null | grep -q .; then
+    MISSING="$MISSING\n  brew install mpv         # 视频解码库 libmpv"
+fi
+
+if [ -n "$MISSING" ]; then
+    echo "❌ 缺少以下依赖，请先安装后再打包：$MISSING"
+    echo ""
+    exit 1
+fi
+echo "   ✓  依赖检查通过"
+
 # ── 生成图标 ─────────────────────────────────────────────────────────────────
 echo "▶  生成应用图标…"
 if swift make_icon.swift; then

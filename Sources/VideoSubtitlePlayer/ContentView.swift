@@ -1024,32 +1024,30 @@ final class _ResizeHandleNSView: NSView {
 
 struct TranscribeSettingsView: View {
     @ObservedObject var vm: PlayerViewModel
-    @Binding var isPresented: Bool          // 用于文件选择后重新弹出
-    @AppStorage("whisper.modelPath")   private var modelPath:       String = ""
-    @AppStorage("whisper.bilingual")   private var enableBilingual: Bool   = false
-    @AppStorage("whisper.sourceLang")  private var sourceLang:      String = "en"
-    @AppStorage("whisper.targetLang")  private var targetLang:      String = "zh"
-    @State private var showFilePicker = false
+    @Binding var isPresented: Bool
+    @AppStorage("whisper.bilingual")    private var enableBilingual: Bool   = false
+    @AppStorage("whisper.sourceLang")   private var sourceLang:      String = "auto"
+    @AppStorage("whisper.targetLang")   private var targetLang:      String = "zh"
     @Environment(\.dismiss) private var dismiss
 
     private let langOptions: [(code: String, name: String)] = [
+        ("auto", "自动检测"),
         ("en", "英文"), ("zh", "中文"), ("ja", "日文"),
         ("ko", "韩文"), ("fr", "法文"), ("de", "德文"), ("es", "西班牙文")
     ]
-    private var modelFileName: String {
-        modelPath.isEmpty ? "" : URL(fileURLWithPath: modelPath).lastPathComponent
-    }
+    private var hasWhisperX: Bool { PlayerViewModel.whisperxPath != nil }
+    private var modelPath: String { vm.whisperxModelPath }
+    private var modelName: String { vm.whisperxModelDisplayName }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("语音转字幕").font(.headline)
             Divider()
 
-            // ── 模型行（点击 chip 文字区域可更换模型）────────────────
+            // ── 模型行 ────────────────────────────────────────────────
             HStack(spacing: 8) {
-                // 链接 icon → 打开 Whisper 模型官方下载页
                 Button {
-                    NSWorkspace.shared.open(URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
+                    NSWorkspace.shared.open(URL(string: "https://huggingface.co/collections/Systran/faster-whisper")!)
                 } label: {
                     Image(systemName: "link.circle")
                         .font(.system(size: 14))
@@ -1057,13 +1055,22 @@ struct TranscribeSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
-                .help("点击打开 Whisper 模型官方下载页")
+                .help("点击打开模型下载列表页")
                 .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
 
-                Text("Whisper 模型").font(.callout).foregroundStyle(.primary)
+                Text("WhisperX 模型").font(.callout).foregroundStyle(.primary)
                 Spacer()
                 if modelPath.isEmpty {
-                    Button(action: { showFilePicker = true }) {
+                    Button {
+                        isPresented = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            vm.importWhisperxModel {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    isPresented = true
+                                }
+                            }
+                        }
+                    } label: {
                         Text("点击导入…")
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
@@ -1073,9 +1080,28 @@ struct TranscribeSettingsView: View {
                     .buttonStyle(.plain)
                     .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
                 } else {
-                    TranscribeModelChip(name: modelFileName,
-                                        onReplace: { showFilePicker = true },
-                                        onRemove:  { vm.removeWhisperModel() })
+                    TranscribeModelChip(name: modelName,
+                                        onReplace: {
+                                            isPresented = false
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                                vm.importWhisperxModel {
+                                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                                        isPresented = true
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onRemove: { vm.removeWhisperxModel() })
+                }
+            }
+
+            // ── 未安装提示 ────────────────────────────────────────────
+            if !hasWhisperX {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.caption)
+                    Text("未检测到 whisperx，请先安装：pip install whisperx")
+                        .font(.caption).foregroundStyle(.orange)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -1091,7 +1117,9 @@ struct TranscribeSettingsView: View {
                             }.labelsHidden().frame(width: 80).controlSize(.small)
                             Text("译为").font(.caption).foregroundStyle(.secondary)
                             Picker("", selection: $targetLang) {
-                                ForEach(langOptions, id: \.code) { Text($0.name).tag($0.code) }
+                                ForEach(langOptions.filter { $0.code != "auto" }, id: \.code) {
+                                    Text($0.name).tag($0.code)
+                                }
                             }.labelsHidden().frame(width: 80).controlSize(.small)
                         }
                         .frame(maxWidth: .infinity)
@@ -1103,37 +1131,25 @@ struct TranscribeSettingsView: View {
             TranscribePopoverButton(
                 "开始识别",
                 isPrimary: true,
-                disabled: modelPath.isEmpty || vm.isTranscribing,
+                disabled: modelPath.isEmpty || !hasWhisperX || vm.isTranscribing,
                 fullWidth: true
             ) {
                 dismiss()
+                let lang = sourceLang == "auto" ? "" : sourceLang
                 if #available(macOS 26, *) {
-                    vm.transcribeAudio(bilingual: enableBilingual, sourceLang: sourceLang, targetLang: targetLang)
+                    vm.transcribeWithWhisperX(sourceLang: lang,
+                                               bilingual: enableBilingual, targetLang: targetLang)
                 } else {
-                    vm.transcribeAudio()
+                    vm.transcribeWithWhisperX(sourceLang: lang)
                 }
             }
-
         }
         .padding(16)
         .frame(width: 310)
-        .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data]
-        ) { result in
-            if case .success(let url) = result {
-                vm.whisperModelPath = url.path
-                vm.objectWillChange.send()
-            }
-            // macOS 上 NSOpenPanel 会让 popover 失焦关闭；选完后重新弹出
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                isPresented = true
-            }
-        }
     }
 }
 
-// 模型文件名 Chip（带 ✕ 移除）
+// 模型名 Chip（带 ✕ 移除，点击文字区域可更换）
 private struct TranscribeModelChip: View {
     let name: String
     let onReplace: () -> Void
@@ -1142,7 +1158,6 @@ private struct TranscribeModelChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            // 点击图标+文字区域 → 更换模型
             Button(action: onReplace) {
                 HStack(spacing: 4) {
                     Image(systemName: "cpu").font(.system(size: 10)).foregroundStyle(.secondary)
@@ -1154,7 +1169,6 @@ private struct TranscribeModelChip: View {
             .help("点击更换模型")
             .onHover { h in if h { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() } }
 
-            // X → 删除模型
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(xHover ? Color.primary : Color.secondary)

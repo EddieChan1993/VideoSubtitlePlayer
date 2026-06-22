@@ -526,6 +526,16 @@ bash build.sh --arch x86_64   # 强制 Intel 包
 
 ## 变更记录
 
+### 2026-06-22
+- 🆕 新增：WhisperX 引擎完整支持，完全替换 whisper-cli；用户手动导入 faster-whisper 模型目录（含 model.bin + config.json）
+- 🆕 新增：模型下载链接指向 `https://huggingface.co/collections/Systran/faster-whisper`
+- 🆕 新增：源语言选择器（含"自动检测"选项），支持中/英/日/韩/法/德/西班牙文
+- 🆕 新增：`build.sh` / `make_app.sh` 构建前依赖检查（swift/ffmpeg/libmpv/iconutil），缺少必须依赖立即报错退出；whisperx 为可选警告
+- 🐛 修复：whisperx 子进程 PATH 注入（`/opt/homebrew/bin`），解决 `FileNotFoundError: ffmpeg`
+- 🐛 修复：`--compute_type int8`，解决 Mac 不支持 float16 报错
+- 🐛 修复：模型导入改为文件夹选择（`canChooseDirectories=true`），解决 `HFValidationError: Repo id must be in form 'repo_name'`
+- 🐛 修复：NSOpenPanel 在 popover 中弹出的顺序（先关 popover 再开 panel，完成后重新打开），解决 panel 无响应问题
+
 ### 2026-06-16
 - ♻️ 优化：`HistoryPanelView` 和 `HistoryPopoverView` 的"清空全部"按钮增加二次确认弹窗（`confirmationDialog`），防止误操作清空播放记录
 

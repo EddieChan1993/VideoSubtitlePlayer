@@ -762,48 +762,92 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
 
     // MARK: - Format warning
 
-    // MARK: - Transcribe (whisper-cli / whisper.cpp)
+    // MARK: - Transcribe (WhisperX)
 
-    /// whisper-cli 可执行文件路径（whisper.cpp，brew install whisper-cpp）
-    static let whisperPath: String? = {
-        ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
-            .first { FileManager.default.fileExists(atPath: $0) }
+    /// whisperx 可执行文件路径（pip install whisperx）
+    static let whisperxPath: String? = {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "/opt/homebrew/bin/whisperx",
+            "/usr/local/bin/whisperx",
+            "\(home)/.local/bin/whisperx",
+            "\(home)/Library/Python/3.11/bin/whisperx",
+            "\(home)/Library/Python/3.12/bin/whisperx",
+            "\(home)/Library/Python/3.13/bin/whisperx",
+        ]
+        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            return found
+        }
+        // 尝试 `which whisperx`
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        p.arguments = ["whisperx"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        try? p.run(); p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return out.isEmpty || p.terminationStatus != 0 ? nil : out
     }()
 
-    /// 用户手动导入的 ggml .bin 模型文件路径（持久化到 UserDefaults）
-    var whisperModelPath: String {
-        get { UserDefaults.standard.string(forKey: "whisper.modelPath") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "whisper.modelPath") }
+    /// WhisperX 模型路径（本地目录）或模型名（首次未导入时的 fallback）
+    var whisperxModelPath: String {
+        get { UserDefaults.standard.string(forKey: "whisperx.modelPath") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "whisperx.modelPath"); objectWillChange.send() }
     }
 
-    /// 仅文件名，用于显示
-    var whisperModelFileName: String {
-        let p = whisperModelPath
+    var whisperxModelDisplayName: String {
+        let p = whisperxModelPath
         guard !p.isEmpty else { return "" }
         return URL(fileURLWithPath: p).lastPathComponent
     }
 
-    /// 弹出文件选择器，让用户导入 ggml .bin 模型文件（不拷贝，直接记录路径）
-    func importWhisperModel() {
+    func removeWhisperxModel() {
+        whisperxModelPath = ""
+        objectWillChange.send()
+    }
+
+    func importWhisperxModel(completion: (() -> Void)? = nil) {
         let panel = NSOpenPanel()
-        panel.title = "选择 Whisper 模型文件"
-        panel.message = "请选择 ggml-tiny / ggml-small / ggml-medium / ggml-large 等 .bin 格式文件"
-        panel.allowedContentTypes = [.init(filenameExtension: "bin") ?? .data]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.title = "选择 WhisperX 模型文件夹"
+        panel.message = "请选择包含 model.bin、config.json 的 faster-whisper 模型文件夹"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        whisperModelPath = url.path
+        guard panel.runModal() == .OK, let url = panel.url else {
+            completion?()
+            return
+        }
+        // 第一步：文件完整性 + 格式校验
+        if let err = validateWhisperxModel(at: url) {
+            let a = NSAlert()
+            a.messageText = "模型目录无效"
+            a.informativeText = err
+            a.alertStyle = .warning
+            a.runModal()
+            completion?()
+            return
+        }
+        whisperxModelPath = url.path
         objectWillChange.send()
+        completion?()
     }
 
-    /// 移除当前记录的模型（不删除文件，只清空路径）
-    func removeWhisperModel() {
-        whisperModelPath = ""
-        objectWillChange.send()
+    func resolvedWhisperxModelPath() -> String { whisperxModelPath }
+
+    /// 校验 faster-whisper 模型目录，返回错误描述；nil 表示通过
+    private func validateWhisperxModel(at url: URL) -> String? {
+        if !FileManager.default.fileExists(atPath: url.appendingPathComponent("model.bin").path) {
+            return "未找到 model.bin，请确认选择的是完整的 faster-whisper 模型文件夹。"
+        }
+        if !FileManager.default.fileExists(atPath: url.appendingPathComponent("config.json").path) {
+            return "未找到 config.json，模型目录不完整。"
+        }
+        return nil
     }
 
-    /// 取消正在进行的语音识别（终止 ffmpeg / whisper-cli 子进程）
+    /// 取消正在进行的语音识别（终止子进程）
     func cancelTranscribeAudio() {
         transcribeCancelled = true
         currentTranscribeProcess?.terminate()
@@ -814,25 +858,25 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         transcribeStatus = ""
     }
 
-    func transcribeAudio(bilingual: Bool = false, sourceLang: String = "en", targetLang: String = "zh") {
+    // MARK: - WhisperX Transcribe
+
+    func transcribeWithWhisperX(sourceLang: String,
+                                 bilingual: Bool = false, targetLang: String = "zh") {
+        let modelPath = resolvedWhisperxModelPath()
         guard let videoURL else { return }
-        guard let whisperCLI = PlayerViewModel.whisperPath else {
+        guard let whisperxCLI = PlayerViewModel.whisperxPath else {
             let a = NSAlert()
-            a.messageText = "未找到 whisper-cli"
-            a.informativeText = "请先安装：brew install whisper-cpp"
+            a.messageText = "未找到 whisperx"
+            a.informativeText = "请先安装：pip install whisperx\n\n安装后重启 SubMelon 即可使用。"
             a.alertStyle = .warning
             a.runModal()
             return
         }
         guard let ffmpeg = SubtitleExtractor.ffmpegPath else { return }
-        let modelPath = whisperModelPath
-        guard !modelPath.isEmpty else { return }
 
         let outDir  = videoURL.deletingLastPathComponent()
         let stem    = videoURL.deletingPathExtension().lastPathComponent
-        // 使用 .asr.srt 后缀而非 .srt，避免被 findCompanionTracks 当作内置伴随字幕重复加载
         let outSRT  = outDir.appendingPathComponent(stem + ".asr.srt")
-        // whisper-cli 只接受 WAV，先用 ffmpeg 提取为 16kHz 单声道
         let tempWAV = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".wav")
 
@@ -843,14 +887,17 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         transcribeTask = Task { [weak self] in
             guard let self else { return }
 
-            // success 携带实际找到的 SRT 路径（whisper-cli 有时附加语言码，如 stem.en.srt）
             enum WhisperResult { case success(URL); case failed(String) }
 
-            // 辅助：在同步上下文运行子进程并返回（退出码, stderr）
             func runSync(_ exe: String, _ args: [String]) -> (Int32, String) {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: exe)
                 p.arguments = args
+                // 注入 PATH，确保子进程能找到 Homebrew 的 ffmpeg 等工具
+                var env = ProcessInfo.processInfo.environment
+                let extraPaths = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+                env["PATH"] = [extraPaths, env["PATH"] ?? ""].filter { !$0.isEmpty }.joined(separator: ":")
+                p.environment = env
                 let outPipe = Pipe(), errPipe = Pipe()
                 p.standardOutput = outPipe; p.standardError = errPipe
                 let errBox = DataBox()
@@ -858,163 +905,10 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                 g.enter(); DispatchQueue.global().async { errBox.append(errPipe.fileHandleForReading.readDataToEndOfFile()); g.leave() }
                 g.enter(); DispatchQueue.global().async { _ = outPipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
                 guard (try? p.run()) != nil else { g.wait(); return (-1, "launch failed") }
-                self.currentTranscribeProcess = p   // 暴露给 cancelTranscribeAudio
+                self.currentTranscribeProcess = p
                 p.waitUntilExit(); g.wait()
                 self.currentTranscribeProcess = nil
                 return (p.terminationStatus, String(data: errBox.data, encoding: .utf8) ?? "")
-            }
-
-            // 后处理：合并不以句末标点结尾的相邻段落，再按句子边界拆分并按字符比例分配时间。
-            // 解决 whisper 按字符数强制截断导致的跨句断行问题。
-            func mergeAndSplitBySentence(_ raw: String) -> String {
-                func parseTime(_ s: String) -> Double {
-                    let p = s.trimmingCharacters(in: .whitespaces)
-                        .components(separatedBy: CharacterSet(charactersIn: ":,"))
-                    guard p.count == 4,
-                          let h = Double(p[0]), let m = Double(p[1]),
-                          let sec = Double(p[2]), let ms = Double(p[3]) else { return 0 }
-                    return h * 3600 + m * 60 + sec + ms / 1000
-                }
-                func fmtTime(_ t: Double) -> String {
-                    let total = Int(max(0, t) * 1000)
-                    return String(format: "%02d:%02d:%02d,%03d",
-                                  total / 3600000, (total / 60000) % 60,
-                                  (total / 1000) % 60, total % 1000)
-                }
-                func endsWithSentence(_ t: String) -> Bool {
-                    let ch = t.trimmingCharacters(in: .whitespaces).last
-                    return ch == "." || ch == "?" || ch == "!"
-                }
-                // 按 ". A" / "? A" / "! A" 拆句，标点留在前句末尾
-                func splitSentences(_ text: String) -> [String] {
-                    var result: [String] = []
-                    var cur = ""
-                    var idx = text.startIndex
-                    while idx < text.endIndex {
-                        let ch = text[idx]
-                        cur.append(ch)
-                        if ch == "." || ch == "?" || ch == "!" {
-                            let ni = text.index(after: idx)
-                            if ni < text.endIndex, text[ni] == " " {
-                                let ai = text.index(after: ni)
-                                if ai < text.endIndex, text[ai].isUppercase {
-                                    result.append(cur.trimmingCharacters(in: .whitespaces))
-                                    cur = ""
-                                    idx = ai
-                                    continue
-                                }
-                            }
-                        }
-                        idx = text.index(after: idx)
-                    }
-                    let tail = cur.trimmingCharacters(in: .whitespaces)
-                    if !tail.isEmpty { result.append(tail) }
-                    return result.filter { !$0.isEmpty }
-                }
-
-                struct Block { var t0: Double; var t1: Double; var text: String }
-
-                // 解析所有 SRT 块
-                let normalized = raw
-                    .replacingOccurrences(of: "\r\n", with: "\n")
-                    .replacingOccurrences(of: "\r", with: "\n")
-                var parsed: [Block] = []
-                for chunk in normalized.components(separatedBy: "\n\n") {
-                    let lines = chunk.components(separatedBy: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty }
-                    guard !lines.isEmpty,
-                          let tsIdx = lines.firstIndex(where: { $0.contains("-->") }),
-                          tsIdx < lines.count - 1 else { continue }
-                    let tsParts = lines[tsIdx].components(separatedBy: " --> ")
-                    guard tsParts.count == 2 else { continue }
-                    let t0 = parseTime(tsParts[0])
-                    let t1 = parseTime(tsParts[1])
-                    let text = lines[(tsIdx + 1)...].joined(separator: " ")
-                    parsed.append(Block(t0: t0, t1: t1, text: text))
-                }
-
-                // 过滤 Whisper 幻觉：去掉与前几条文本高度相似的重复块
-                func normalize(_ s: String) -> String {
-                    s.lowercased()
-                     .components(separatedBy: .punctuationCharacters).joined()
-                     .components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined(separator: " ")
-                }
-                func similarity(_ a: String, _ b: String) -> Double {
-                    let na = normalize(a), nb = normalize(b)
-                    guard !na.isEmpty, !nb.isEmpty else { return 0 }
-                    if na == nb { return 1.0 }
-                    // 检查包含关系（一方是另一方的子串）
-                    if na.contains(nb) || nb.contains(na) { return 0.9 }
-                    // 简单词级 Jaccard
-                    let wa = Set(na.components(separatedBy: " "))
-                    let wb = Set(nb.components(separatedBy: " "))
-                    let inter = wa.intersection(wb).count
-                    let union = wa.union(wb).count
-                    return union == 0 ? 0 : Double(inter) / Double(union)
-                }
-                let threshold = 0.85 // 相似度阈值
-
-                // 第一步：全局统计，出现 3 次及以上的文本全部删除（连第一条也删）
-                var normCount: [String: Int] = [:]
-                for block in parsed { normCount[normalize(block.text), default: 0] += 1 }
-                let globalFiltered = parsed.filter { normCount[normalize($0.text), default: 0] < 3 }
-
-                // 第二步：相邻滑动窗口过滤，兜底去掉只重复 1~2 次的幻觉
-                let windowSize = 6
-                var filtered: [Block] = []
-                for block in globalFiltered {
-                    let recent = filtered.suffix(windowSize)
-                    let isHallucination = recent.contains { similarity($0.text, block.text) >= threshold }
-                    if !isHallucination { filtered.append(block) }
-                }
-                let deduped = filtered
-
-                // 合并不以句末标点结尾的相邻块，直到遇到句末标点为止
-                var merged: [Block] = []
-                var accumText = ""
-                var accumT0: Double = 0
-                var accumT1: Double = 0
-                for block in deduped {
-                    if accumText.isEmpty {
-                        accumText = block.text
-                        accumT0 = block.t0
-                        accumT1 = block.t1
-                    } else {
-                        accumText += " " + block.text
-                        accumT1 = block.t1
-                    }
-                    if endsWithSentence(accumText) {
-                        merged.append(Block(t0: accumT0, t1: accumT1, text: accumText))
-                        accumText = ""
-                    }
-                }
-                if !accumText.isEmpty {
-                    merged.append(Block(t0: accumT0, t1: accumT1, text: accumText))
-                }
-
-                // 对每个完整句子块，按句子边界拆分并按字符比例分配时间
-                var out = ""
-                var newIdx = 1
-                for block in merged {
-                    let parts = splitSentences(block.text)
-                    if parts.count <= 1 {
-                        out += "\(newIdx)\n\(fmtTime(block.t0)) --> \(fmtTime(block.t1))\n\(block.text)\n\n"
-                        newIdx += 1
-                    } else {
-                        let totalChars = max(1, parts.reduce(0) { $0 + $1.count })
-                        let dur = block.t1 - block.t0
-                        var cur = block.t0
-                        for part in parts {
-                            let frac = Double(part.count) / Double(totalChars)
-                            let end = cur + dur * frac
-                            out += "\(newIdx)\n\(fmtTime(cur)) --> \(fmtTime(end))\n\(part)\n\n"
-                            newIdx += 1
-                            cur = end
-                        }
-                    }
-                }
-                return out
             }
 
             let result: WhisperResult = await withCheckedContinuation { continuation in
@@ -1032,54 +926,55 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                         return
                     }
 
-                    // 更新状态提示
                     DispatchQueue.main.async { [self] in
-                        self.transcribeStatus = "语音识别中，请稍候（可能需要数分钟）…"
+                        self.transcribeStatus = "WhisperX 识别中，请稍候（可能需要数分钟）…"
                     }
 
-                    // Step 2: whisper-cli 识别
-                    // 输出前缀使用 stem.asr（不含最终扩展名），生成 stem.asr.srt
-                    // 避免与 findCompanionTracks 的 stem.srt 命名冲突，防止重复加载
-                    let outPrefix = outSRT.deletingPathExtension().path
-                    let (wCode, wErr) = runSync(whisperCLI, [
-                        "-m", modelPath,
-                        "-f", tempWAV.path,
-                        "-osrt",
-                        "-of", outPrefix,
-                        "-sow"           // 按单词边界切，不截断词中间；让 whisper 按音频停顿自然分段
-                    ])
+                    // Step 2: whisperx 识别，输出 SRT 到视频同目录
+                    // whisperx 自动命名输出为 {stem}.srt（基于输入 wav 文件名）
+                    let tempOutDir = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+                    try? FileManager.default.createDirectory(at: tempOutDir, withIntermediateDirectories: true)
+                    defer { try? FileManager.default.removeItem(at: tempOutDir) }
 
+                    var args = [
+                        tempWAV.path,
+                        "--model", modelPath,
+                        "--output_format", "srt",
+                        "--output_dir", tempOutDir.path,
+                        "--compute_type", "int8",   // Mac 上 float16 不受支持
+                    ]
+                    if !sourceLang.isEmpty && sourceLang != "auto" {
+                        args += ["--language", sourceLang]
+                    }
+
+                    let (wCode, wErr) = runSync(whisperxCLI, args)
                     guard wCode == 0 else {
-                        continuation.resume(returning: .failed(wErr.isEmpty ? "whisper-cli 异常退出（code \(wCode)）" : String(wErr.suffix(500))))
+                        let msg = wErr.isEmpty ? "whisperx 异常退出（code \(wCode)）" : String(wErr.suffix(600))
+                        continuation.resume(returning: .failed(msg))
                         return
                     }
 
-                    // 优先检查预期路径 stem.asr.srt；
-                    // whisper-cli 某些版本会再附加语言码（如 stem.asr.en.srt），做 fallback 扫描
-                    var foundSRT: URL? = nil
-                    if FileManager.default.fileExists(atPath: outSRT.path) {
-                        foundSRT = outSRT
-                    } else {
-                        let outPrefixName = outSRT.deletingPathExtension().lastPathComponent.lowercased()
-                        let items = (try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? []
-                        if let found = items.first(where: { name in
-                            let lower = name.lowercased()
-                            return lower.hasSuffix(".srt") && lower.hasPrefix(outPrefixName)
-                        }) {
-                            foundSRT = outDir.appendingPathComponent(found)
-                        }
+                    // whisperx 输出 SRT 文件名与输入 wav 同名（stem.srt）
+                    let wavStem = tempWAV.deletingPathExtension().lastPathComponent
+                    let candidates = (try? FileManager.default.contentsOfDirectory(atPath: tempOutDir.path)) ?? []
+                    guard let srtName = candidates.first(where: { $0.hasSuffix(".srt") }),
+                          let _ = candidates.first else {
+                        continuation.resume(returning: .failed("whisperx 识别完成但未找到输出 SRT（wav stem: \(wavStem)）\n\n输出：\(wErr.suffix(300))"))
+                        return
                     }
 
-                    if let url = foundSRT {
-                        // 后处理：合并跨句断行，再按句子边界重新分段
-                        if let raw = try? String(contentsOf: url, encoding: .utf8) {
-                            let processed = mergeAndSplitBySentence(raw)
-                            try? processed.write(to: url, atomically: true, encoding: .utf8)
-                        }
-                        continuation.resume(returning: .success(url))
-                    } else {
-                        continuation.resume(returning: .failed("识别完成但未找到输出 SRT 文件（已检查目录：\(outDir.path)）\n\n whisper-cli 输出：\(wErr.suffix(300))"))
+                    let tempSRT = tempOutDir.appendingPathComponent(srtName)
+                    // 拷贝到视频目录
+                    try? FileManager.default.removeItem(at: outSRT)
+                    do {
+                        try FileManager.default.copyItem(at: tempSRT, to: outSRT)
+                    } catch {
+                        continuation.resume(returning: .failed("无法写入输出 SRT：\(error.localizedDescription)"))
+                        return
                     }
+
+                    continuation.resume(returning: .success(outSRT))
                 }
             }
 
@@ -1088,43 +983,36 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
                 await MainActor.run {
                     self.isTranscribing = false
                     self.transcribeStatus = ""
-                    guard !self.transcribeCancelled else { return }  // 用户主动取消，不弹错误弹窗
+                    guard !self.transcribeCancelled else { return }
                     let a = NSAlert()
-                    a.messageText = "语音识别失败"
+                    a.messageText = "WhisperX 识别失败"
                     a.informativeText = err
                     a.alertStyle = .warning
                     a.runModal()
                 }
 
-            case .success(let actualSRT):
-                // 翻译生成双语 SRT
+            case .success(let srtURL):
                 var bilingualURL: URL? = nil
                 var translateError: String? = nil
                 if bilingual {
                     await MainActor.run { self.transcribeStatus = "正在翻译字幕…" }
                     if #available(macOS 26, *) {
                         (bilingualURL, translateError) = await self.translateSRT(
-                            at: actualSRT, sourceLang: sourceLang, targetLang: targetLang)
+                            at: srtURL, sourceLang: sourceLang, targetLang: targetLang)
                     } else {
                         translateError = "双语翻译需要 macOS 26 或更高版本"
                     }
                 }
-                // 用本地常量捕获，避免 Swift 6 对 var 的跨并发引用警告
                 let finalBilingualURL = bilingualURL
                 let finalTranslateError = translateError
                 await MainActor.run {
                     self.isTranscribing = false
                     self.transcribeStatus = ""
-                    // 仅在当前没有字幕显示时才 autoSelect，避免覆盖用户正在看的双语/其他轨道
                     let noSubtitleNow = self.selectedMode == nil || self.subtitles.isEmpty
-                    // 原始字幕先加载
-                    self.loadExternalSubtitle(from: actualSRT,
-                                              autoSelect: noSubtitleNow && finalBilingualURL == nil)
-                    // 双语字幕加载（如果当前有字幕也不强制切换）
+                    self.loadExternalSubtitle(from: srtURL, autoSelect: noSubtitleNow && finalBilingualURL == nil)
                     if let url = finalBilingualURL {
                         self.loadExternalSubtitle(from: url, autoSelect: noSubtitleNow)
                     }
-                    // 双语翻译失败时提示原因
                     if bilingual, finalBilingualURL == nil, let err = finalTranslateError {
                         let a = NSAlert()
                         a.messageText = "双语翻译未完成"
