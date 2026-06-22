@@ -252,6 +252,93 @@ VideoSubtitleApp (@StateObject PlayerViewModel)
 | **修复** | VM 提升至 App 级别，`@EnvironmentObject` 注入 |
 | **文件** | `App.swift`；`ContentView.swift` |
 
+---
+
+## 待开发：WhisperX 语音识别方案
+
+### 背景
+
+当前字幕识别使用 **whisper.cpp**（`whisper-cli`，需用户自装），时间戳精度依赖 whisper 原生 word-level。  
+新方案升级为 **WhisperX**，引入音素级强制对齐，时间戳更精确。
+
+### WhisperX 技术栈
+
+```
+silero-vad（VAD 预切段）
+  → faster-whisper（识别）
+  → wav2vec2 forced alignment（音素对齐）
+  → 输出 SRT → Swift 解析
+```
+
+### 实现方案
+
+Swift 调用子进程模式不变，将 `whisper-cli` 替换为 Python 脚本：
+
+```
+Swift → 子进程 python run_whisperx.py <音频路径> <语言> → stdout SRT → Swift 解析
+```
+
+Python 脚本约 50-80 行，Swift 侧改动最小。
+
+### 打包方案（build.sh 构建期打包，开箱即用）
+
+用 **conda-pack** 将完整 Python 环境压缩打包进 .app：
+
+```
+SubMelon.app/
+  Contents/
+    MacOS/
+      SubMelon
+      ffmpeg
+    Resources/
+      whisperx_env.tar.gz   ← 压缩的完整 Python 环境
+      run_whisperx.py
+```
+
+首次启动时检测 `~/Library/Application Support/SubMelon/env/` 是否存在，不存在则显示进度条解压。
+
+**build.sh 新增步骤：**
+```bash
+# 1. 用 conda-pack 打包 Python 环境（仅首次或环境变更时执行）
+conda-pack -n whisperx_build -o whisperx_env.tar.gz
+# 2. 复制进 .app/Contents/Resources/
+```
+
+### 体积评估
+
+| 组件 | 安装后 | 压缩后 |
+|---|---|---|
+| Python 3.11 运行时 | ~30MB | ~15MB |
+| torch（MPS，Apple Silicon） | ~500MB | ~200MB |
+| torchaudio | ~30MB | ~15MB |
+| ctranslate2 + faster-whisper | ~50MB | ~25MB |
+| whisperx + 其他依赖 | ~130MB | ~65MB |
+| **合计** | **~740MB** | **~320MB** |
+
+**.app 总下载体积约 380-400MB**（含 ffmpeg、主程序）。  
+解压后环境占用 `~/Library/Application Support/SubMelon/env/` ~750MB。
+
+### 模型（用户自行下载，App 内引导）
+
+| 模型 | 用途 | 大小 |
+|---|---|---|
+| Whisper small/medium/large-v3 | 语音识别 | 483MB / 1.5GB / 3GB |
+| wav2vec2 对齐模型（中文） | 音素对齐 | ~400MB |
+| wav2vec2 对齐模型（英文） | 音素对齐 | ~400MB |
+
+### 打包架构（双版本）
+
+- **Apple Silicon（arm64）版**：torch MPS 加速，识别速度快
+- **Intel（x86_64）版**：torch CPU only，速度慢但兼容老 Mac
+
+两个版本分别用对应架构的 conda 环境打包，build.sh 通过参数区分：
+```bash
+bash build.sh --dev           # 开发模式
+bash build.sh                 # 当前架构全量包
+bash build.sh --arch arm64    # 强制 Apple Silicon 包
+bash build.sh --arch x86_64   # 强制 Intel 包
+```
+
 ### Bug 10 — 音量滑块 50% 但实际音量 100%
 | | |
 |---|---|
