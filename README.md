@@ -41,10 +41,10 @@
 ### 🎤 语音转字幕
 | 功能 | 说明 |
 |------|------|
-| **Whisper 识别** | 调用 whisper-cli，自动提取 16kHz 音频 → 识别 → 后处理（断句合并），生成 SRT 并即时加载 |
+| **WhisperX 识别** | 调用 WhisperX（faster-whisper 后端），自动提取 16kHz 音频 → 识别 → 后处理（断句合并），生成 SRT 并即时加载 |
 | **双语生成** | macOS 26+ 专属，Translation.framework 翻译英文 SRT 为双语字幕文件 |
-| **随时取消** | 识别进行中可点叉号取消，立即终止 ffmpeg / whisper 子进程，静默退出不报错 |
-| **模型管理** | 点击当前模型 Chip 直接替换 ggml `.bin` 模型文件，link icon 跳转官方下载 |
+| **随时取消** | 识别进行中可点叉号取消，立即终止 ffmpeg / whisperx 子进程，静默退出不报错 |
+| **模型管理** | 手动导入 faster-whisper 模型文件夹（含 model.bin + config.json），link icon 跳转 [官方模型列表](https://huggingface.co/collections/Systran/faster-whisper) |
 
 ### 🗃 字幕导出 & 内嵌
 | 功能 | 说明 |
@@ -71,7 +71,8 @@
   ```
 - **语音识别需要**（本机运行，不打包）：
   ```bash
-  brew install whisper-cpp
+  pip install whisperx
+  # 模型从 https://huggingface.co/collections/Systran/faster-whisper 下载后手动导入
   ```
 
 ---

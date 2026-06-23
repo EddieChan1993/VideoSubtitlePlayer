@@ -526,6 +526,10 @@ bash build.sh --arch x86_64   # 强制 Intel 包
 
 ## 变更记录
 
+### 2026-06-23
+- 🐛 修复：字幕跳转后"开始静音+画面加速追赶"问题；`jumpToSubtitle` 改为 pause → seekExact → 等 `onSeekingEnded` 回调（seek 真正完成）→ unpause，时间钟在 pause 期间冻结，消除漂移和追赶
+- 🐛 修复：seek 后 CoreAudio 重新初始化导致短暂静音；MPV 加 `audio-stream-silence=yes` 保持音频输出设备持续打开
+
 ### 2026-06-22
 - 🆕 新增：WhisperX 引擎完整支持，完全替换 whisper-cli；用户手动导入 faster-whisper 模型目录（含 model.bin + config.json）
 - 🆕 新增：模型下载链接指向 `https://huggingface.co/collections/Systran/faster-whisper`
