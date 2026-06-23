@@ -63,6 +63,8 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
     private var transcribeTask: Task<Void, Never>?
     private var currentTranscribeProcess: Process?
     private var transcribeCancelled = false
+    /// jumpToSubtitle 时置 true，onSeekingEnded 回调后 unpause，避免时间钟漂移导致加速追赶
+    private var pendingPlayAfterSeek = false
 
 
 
@@ -185,6 +187,12 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         }
         ctrl.onDuration = { [weak self] dur in
             self?.videoDuration = dur
+        }
+        ctrl.onSeekingEnded = { [weak self] in
+            guard let self, self.pendingPlayAfterSeek else { return }
+            self.pendingPlayAfterSeek = false
+            self.mpvController?.setPlaying(true)
+            self.isPlaying = true
         }
         // 立即 prepare：加载 libmpv、初始化、开始解码
         // GL 层出现后会自动调用 setupRenderContext，画面就渲染在我们的 View 里
@@ -465,7 +473,10 @@ class PlayerViewModel: ObservableObject, @unchecked Sendable {
         currentTime = subtitle.startTime
         lastTimePublish = CACurrentMediaTime()
         if let mpv = mpvController {
-            if !isPlaying { mpv.setPlaying(true); isPlaying = true }
+            // pause → seekExact → 等 onSeekingEnded 再 unpause
+            // 时间钟在 pause 期间冻结，seek 完成后从精确位置重新开始，避免加速追赶
+            pendingPlayAfterSeek = true
+            mpv.setPlaying(false)
             mpv.seekExact(to: subtitle.startTime)
         } else {
             let t = CMTime(seconds: subtitle.startTime, preferredTimescale: 600)
